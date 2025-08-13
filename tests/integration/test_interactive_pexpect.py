@@ -22,6 +22,21 @@ def test_interactive_direnv_session(tmp_path: Path):
         "PATH_add .direnv/bin\n"
     )
 
+    # Provide a minimal flake for nix develop inside direnv exec
+    (tmp_path / "flake.nix").write_text(
+        '{\n'
+        '  description = "tmp interactive test flake";\n'
+        '  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";\n'
+        '  outputs = { self, nixpkgs }:\n'
+        '    let\n'
+        '      system = builtins.currentSystem;\n'
+        '      pkgs = import nixpkgs { inherit system; };\n'
+        '    in {\n'
+        '      devShells.${system}.default = pkgs.mkShell { };\n'
+        '    };\n'
+        '}\n'
+    )
+
     # Spawn an interactive bash with direnv hook
     child = pexpect.spawn("bash", ["--noprofile", "--norc", "-i"], encoding="utf-8", timeout=20)
     child.expect_exact(["$", "#", ">", "%", "]$"])  # First prompt heuristic
