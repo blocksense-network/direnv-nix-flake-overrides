@@ -59,7 +59,7 @@ def test_direnv_exec_loads_plugin_and_emits_args(tmp_path: Path):
     assert cp_ls.returncode == 0, cp_ls.stderr
     names = set(cp_ls.stdout.strip().splitlines())
     assert {"ndev", "nbuild", "nrun"}.issubset(names)
-    cp_cat = run(["direnv", "exec", str(project), "bash", "-lc", "sed -n '1,80p' .direnv/bin/ndev"])
+    cp_cat = run(["direnv", "exec", str(project), "bash", "-lc", f"cd '{project}'; sed -n '1,80p' .direnv/bin/ndev"])
     assert cp_cat.returncode == 0, cp_cat.stderr
     content = cp_cat.stdout
     assert "exec nix develop" in content
