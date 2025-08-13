@@ -53,14 +53,16 @@ def test_interactive_direnv_session(tmp_path: Path):
     child.sendline("direnv reload || true")
     child.expect_exact("PEXPECT>$ ")
 
-    # Create wrappers explicitly within managed env, then list (single nix develop invocation)
-    child.sendline(f"direnv exec . nix develop -c bash -lc 'source \"{PLUGIN}\"; cd \"$DIRENV_DIR\"; flake_overrides_install_wrappers .; ls -1 .direnv/bin; echo OK'")
+    # Create wrappers explicitly within managed env using the ambient nix develop from pytest
+    child.sendline(f"direnv exec . bash -lc 'source \"{PLUGIN}\"; cd \"$DIRENV_DIR\"; flake_overrides_install_wrappers .' && echo MADE")
+    child.expect("MADE\r?\n")
+    child.sendline("direnv exec . bash -lc 'ls -1 .direnv/bin; echo OK'")
     child.expect("OK\r?\n")
     output = child.before
     assert "ndev" in output and "nbuild" in output and "nrun" in output
 
     # Now print markers and the quoted args in between, captured from interactive session
-    child.sendline(f"direnv exec . nix develop -c bash -lc 'source \"{PLUGIN}\"; cd \"$DIRENV_DIR\"; echo __BEGIN__; flake_override_args_quoted; echo __END__'")
+    child.sendline(f"direnv exec . bash -lc 'source \"{PLUGIN}\"; cd \"$DIRENV_DIR\"; echo __BEGIN__; flake_override_args_quoted; echo __END__'")
     child.expect("__END__\r?\n")
     # Capture everything printed before the END marker, then slice after BEGIN
     output = child.before
