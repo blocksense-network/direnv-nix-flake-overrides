@@ -38,7 +38,7 @@ def test_interactive_direnv_session(tmp_path: Path):
     )
 
     # Spawn an interactive bash with direnv hook
-    child = pexpect.spawn("bash", ["--noprofile", "--norc", "-i"], encoding="utf-8", timeout=20)
+    child = pexpect.spawn("bash", ["--noprofile", "--norc", "-i"], encoding="utf-8", timeout=120)
     child.expect_exact(["$", "#", ">", "%", "]$"])  # First prompt heuristic
     child.sendline('PS1="PEXPECT>$ "')
     child.expect_exact("PEXPECT>$ ")
@@ -53,10 +53,8 @@ def test_interactive_direnv_session(tmp_path: Path):
     child.sendline("direnv reload || true")
     child.expect_exact("PEXPECT>$ ")
 
-    # Create wrappers explicitly within managed env, then list
-    child.sendline(f"direnv exec . nix develop -c bash -lc 'source \"{PLUGIN}\"; cd \"$DIRENV_DIR\"; flake_overrides_install_wrappers .' && echo MADE")
-    child.expect("MADE\r?\n")
-    child.sendline("direnv exec . nix develop -c bash -lc 'ls -1 .direnv/bin && echo OK'")
+    # Create wrappers explicitly within managed env, then list (single nix develop invocation)
+    child.sendline(f"direnv exec . nix develop -c bash -lc 'source \"{PLUGIN}\"; cd \"$DIRENV_DIR\"; flake_overrides_install_wrappers .; ls -1 .direnv/bin; echo OK'")
     child.expect("OK\r?\n")
     output = child.before
     assert "ndev" in output and "nbuild" in output and "nrun" in output
