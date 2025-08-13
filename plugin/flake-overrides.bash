@@ -137,7 +137,12 @@ flake_override_args_quoted() {
 # Default subcmds: develop build run
 flake_overrides_install_wrappers() {
   local flake="${1:-.}"; shift || true
-  local subcmds=("${@:-develop build run}")
+  local -a subcmds
+  if (( $# > 0 )); then
+    subcmds=("$@")
+  else
+    subcmds=(develop build run)
+  fi
   local argsq; argsq="$(flake_override_args_quoted)"
   mkdir -p .direnv/bin
   for sub in "${subcmds[@]}"; do
