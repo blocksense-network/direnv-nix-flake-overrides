@@ -44,6 +44,16 @@ def test_direnv_exec_loads_plugin_and_emits_args(tmp_path: Path):
     # direnv allow and then check wrapper content
     cp_allow = run(["direnv", "allow", str(project)])
     assert cp_allow.returncode == 0, cp_allow.stderr
+    # Create wrappers inside the managed environment (avoid relying on .envrc side-effects)
+    cp_prep = run([
+        "direnv", "exec", str(project), "bash", "-lc",
+        f"source '{PLUGIN}'; cd \"$DIRENV_DIR\"; flake_overrides_install_wrappers .; flake_override_args_quoted",
+    ])
+    assert cp_prep.returncode == 0, cp_prep.stderr
+    out = cp_prep.stdout.strip().split()
+    assert out[0] == "--override-input" and out[1] == "mylib" and out[2].startswith("path:/")
+    assert "--override-flake" in out
+
     # Ensure wrappers exist in the project and contain path:/ coercion
     cp_ls = run(["direnv", "exec", str(project), "bash", "-lc", "ls -1 .direnv/bin"])
     assert cp_ls.returncode == 0, cp_ls.stderr
