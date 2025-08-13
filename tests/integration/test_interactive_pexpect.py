@@ -47,9 +47,14 @@ def test_interactive_direnv_session(tmp_path: Path):
     assert "ndev" in output and "nbuild" in output and "nrun" in output
 
     # Now use direnv exec to call the function inside a managed bash
-    child.sendline("direnv exec . bash -lc 'flake_override_args_quoted' && echo DONE")
+    child.sendline("direnv exec . bash -lc 'flake_override_args_quoted; echo __SEP__' && echo DONE")
     child.expect("DONE\r?\n")
-    args_output = child.before.strip().split()
+    # Extract between last exec and DONE sentinel
+    output = child.before
+    # Keep only content after our separator
+    if "__SEP__" in output:
+        output = output.split("__SEP__")[-1]
+    args_output = output.strip().split()
     assert args_output[:2] == ["--override-input", "mylib"]
     assert args_output[2].startswith("path:/")
 
