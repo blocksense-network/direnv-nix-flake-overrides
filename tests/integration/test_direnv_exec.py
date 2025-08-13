@@ -33,8 +33,9 @@ def test_direnv_exec_loads_plugin_and_emits_args(tmp_path: Path):
     )
     # Create a local directory to be resolved to path:/ABS
     (project / "lib").mkdir()
-    # Write .envrc that sources the plugin directly
+    # Write .envrc that ensures modern bash via nix dev shell first
     (project / ".envrc").write_text(
+        "use flake\n"
         f"source '{PLUGIN}'\n"
         "dotenv_if_exists .env\n"
         "flake_overrides_install_wrappers .\n"
@@ -51,6 +52,7 @@ def test_direnv_exec_loads_plugin_and_emits_args(tmp_path: Path):
     ])
     assert cp_prep.returncode == 0, cp_prep.stderr
     out = cp_prep.stdout.strip().split()
+    assert out, f"no output from flake_override_args_quoted; stderr: {cp_prep.stderr}"
     assert out[0] == "--override-input" and out[1] == "mylib" and out[2].startswith("path:/")
     assert "--override-flake" in out
 
