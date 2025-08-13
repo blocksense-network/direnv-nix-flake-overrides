@@ -28,9 +28,13 @@ _direnv_nfo_log() { log_status "flake-overrides: $*"; }
 # callback receives: name value
 _nfo_each_kv() {
   local _var_name="$1" _cb="$2"
-  local _raw
-  # indirect expansion to read the named variable
+  local _raw=""
+  # Safely read the named variable even under `set -u`
+  # Temporarily disable nounset if enabled
+  local _had_u=0
+  case $- in *u*) _had_u=1; set +u ;; esac
   _raw="${!_var_name}"
+  (( _had_u )) && set -u
   [[ -z "$_raw" ]] && return 0
   local IFS=';'
   # Read into array of entries split on semicolons
@@ -52,7 +56,8 @@ _nfo_each_kv() {
 # else pass as-is.
 _nfo_resolve_ref() {
   local _val="$1"
-  if [[ -d $_val ]]; then
+  local _base="${DIRENV_DIR:-}"
+  if [[ -d "$_val" ]]; then
     local _abs
     if _abs="$(cd "$_val" 2>/dev/null && pwd -P)"; then
       [[ ! -f "$_abs/flake.nix" ]] && _direnv_nfo_log "warn '$_abs' has no flake.nix"
@@ -60,6 +65,15 @@ _nfo_resolve_ref() {
       return 0
     else
       _direnv_nfo_log "cannot access dir '$_val'"
+    fi
+  elif [[ -n "$_base" && -d "$_base/$_val" ]]; then
+    local _abs2
+    if _abs2="$(cd "$_base/$_val" 2>/dev/null && pwd -P)"; then
+      [[ ! -f "$_abs2/flake.nix" ]] && _direnv_nfo_log "warn '$_abs2' has no flake.nix"
+      printf 'path:%s' "$_abs2"
+      return 0
+    else
+      _direnv_nfo_log "cannot access dir '$_base/$_val'"
     fi
   fi
   printf '%s' "$_val"
