@@ -47,7 +47,7 @@ def test_interactive_direnv_session(tmp_path: Path):
     assert "ndev" in output and "nbuild" in output and "nrun" in output
 
     # Now use direnv exec to call the function inside a managed bash
-    child.sendline("direnv exec . bash -lc 'OUT=$(flake_override_args_quoted); printf ""__BEGIN__%s__END__\n"" "$OUT"' && echo DONE")
+    child.sendline("direnv exec . bash -lc 'OUT=$(flake_override_args_quoted); printf \"__BEGIN__%s__END__\\n\" \"$OUT\"' && echo DONE")
     child.expect("DONE\r?\n")
     # Extract between markers
     output = child.before
