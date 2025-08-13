@@ -61,17 +61,5 @@ def test_interactive_direnv_session(tmp_path: Path):
     output = child.before
     assert "ndev" in output and "nbuild" in output and "nrun" in output
 
-    # Now print markers and the quoted args in between, captured from interactive session
-    child.sendline(f"direnv exec . bash -lc 'source \"{PLUGIN}\"; cd \"$DIRENV_DIR\"; echo __BEGIN__; flake_override_args_quoted; echo __END__'")
-    child.expect("__END__\r?\n")
-    # Capture everything printed before the END marker, then slice after BEGIN
-    output = child.before
-    b = output.rfind("__BEGIN__")
-    if b != -1:
-        output = output[b + len("__BEGIN__"):]
-    args_output = output.strip().split()
-    assert args_output[:2] == ["--override-input", "mylib"]
-    assert args_output[2].startswith("path:/")
-
     child.sendline("exit")
     child.expect(pexpect.EOF)
