@@ -41,7 +41,7 @@ def test_interactive_direnv_session(tmp_path: Path):
     # Create wrappers explicitly within managed env, then list
     child.sendline(f"direnv exec . bash -lc 'source \"{PLUGIN}\"; cd \"$DIRENV_DIR\"; flake_overrides_install_wrappers .' && echo MADE")
     child.expect("MADE\r?\n")
-    child.sendline("ls -1 .direnv/bin && echo OK")
+    child.sendline("direnv exec . bash -lc 'ls -1 .direnv/bin && echo OK'")
     child.expect("OK\r?\n")
     output = child.before
     assert "ndev" in output and "nbuild" in output and "nrun" in output
