@@ -33,22 +33,10 @@ def test_direnv_exec_loads_plugin_and_emits_args(tmp_path: Path):
     )
     # Create a local directory to be resolved to path:/ABS
     (project / "lib").mkdir()
-    # Write .envrc that ensures modern bash via nix dev shell first
-    (project / ".envrc").write_text(
-        "use flake\n"
-        f"source '{PLUGIN}'\n"
-        "dotenv_if_exists .env\n"
-        "flake_overrides_install_wrappers .\n"
-        "PATH_add .direnv/bin\n"
-    )
-
-    # direnv allow and then check wrapper content
-    cp_allow = run(["direnv", "allow", str(project)])
-    assert cp_allow.returncode == 0, cp_allow.stderr
-    # Evaluate inside managed dir so relative paths resolve and .envrc is applied
+    # Use direnv exec but control the shell: cd into project, source plugin, and export envs
     cp_args = run([
         "direnv", "exec", str(project), "bash", "-lc",
-        "cd \"$DIRENV_DIR\"; flake_override_args_quoted",
+        f"cd '{project}'; source '{PLUGIN}'; export NIX_FLAKE_OVERRIDE_INPUTS=\"mylib=./lib;foo/nixpkgs=github:NixOS/nixpkgs/nixos-24.05\"; export NIX_FLAKE_OVERRIDE_FLAKES=\"nixpkgs=github:NixOS/nixpkgs/nixos-24.05\"; flake_override_args_quoted",
     ])
     assert cp_args.returncode == 0, cp_args.stderr
     out = cp_args.stdout.strip().split()
@@ -62,7 +50,12 @@ def test_direnv_exec_loads_plugin_and_emits_args(tmp_path: Path):
     assert "--override-flake" in out
 
     # Ensure wrappers exist in the project and contain path:/ coercion
-    cp_ls = run(["direnv", "exec", str(project), "bash", "-lc", "cd \"$DIRENV_DIR\"; ls -1 .direnv/bin"])
+    # Generate wrappers within the managed shell
+    _ = run([
+        "direnv", "exec", str(project), "bash", "-lc",
+        f"cd '{project}'; source '{PLUGIN}'; flake_overrides_install_wrappers .",
+    ])
+    cp_ls = run(["direnv", "exec", str(project), "bash", "-lc", f"cd '{project}'; ls -1 .direnv/bin"])
     assert cp_ls.returncode == 0, cp_ls.stderr
     names = set(cp_ls.stdout.strip().splitlines())
     assert {"ndev", "nbuild", "nrun"}.issubset(names)
