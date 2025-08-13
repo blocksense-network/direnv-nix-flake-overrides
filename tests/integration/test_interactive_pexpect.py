@@ -1,26 +1,11 @@
 import os
-import shutil
 from pathlib import Path
 
 import pytest
-
-try:
-    import pexpect  # type: ignore
-except Exception:  # pragma: no cover
-    pexpect = None
+import pexpect  # type: ignore
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PLUGIN = REPO_ROOT / "plugin" / "flake-overrides.bash"
-
-
-def have(cmd: str) -> bool:
-    return shutil.which(cmd) is not None
-
-
-pytestmark = [
-    pytest.mark.skipif(not have("direnv"), reason="direnv not installed"),
-    pytest.mark.skipif(pexpect is None, reason="pexpect not available"),
-]
 
 
 @pytest.mark.timeout(60)
