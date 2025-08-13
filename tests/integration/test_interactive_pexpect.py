@@ -39,7 +39,7 @@ def test_interactive_direnv_session(tmp_path: Path):
     child.expect_exact("PEXPECT>$ ")
 
     # List wrappers and print quoted args via direnv exec
-    child.sendline("ls -1 .direnv/bin && echo OK")
+    child.sendline("cd \"$DIRENV_DIR\" && ls -1 .direnv/bin && echo OK")
     child.expect("OK\r?\n")
     output = child.before
     assert "ndev" in output and "nbuild" in output and "nrun" in output
