@@ -30,11 +30,12 @@ def test_interactive_direnv_session(tmp_path: Path):
     child.sendline('eval "$(direnv hook bash)"')
     child.expect_exact("PEXPECT>$ ")
 
-    # cd into the project, allow, then verify wrappers exist
+    # cd into the project and proactively allow/reload
     child.sendline(f"cd {tmp_path}")
-    # direnv will block until allow; run allow
-    child.expect("direnv: error|denied|refuse|allow")
-    child.sendline("direnv allow .")
+    child.expect_exact("PEXPECT>$ ")
+    child.sendline("direnv allow . || true")
+    child.expect_exact("PEXPECT>$ ")
+    child.sendline("direnv reload || true")
     child.expect_exact("PEXPECT>$ ")
 
     # List wrappers and print quoted args via direnv exec

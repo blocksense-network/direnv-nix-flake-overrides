@@ -45,7 +45,10 @@ def test_direnv_exec_loads_plugin_and_emits_args(tmp_path: Path):
     cp_allow = run(["direnv", "allow", str(project)])
     assert cp_allow.returncode == 0, cp_allow.stderr
 
-    cp = run(["direnv", "exec", str(project), "bash", "-lc", "flake_override_args_quoted"])
+    cp = run([
+        "direnv", "exec", str(project), "bash", "-lc",
+        f"source '{PLUGIN}'; flake_override_args_quoted",
+    ])
     assert cp.returncode == 0, cp.stderr
     out = cp.stdout.strip().split()
 

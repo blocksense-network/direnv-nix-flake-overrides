@@ -65,7 +65,7 @@ def test_wrapper_script_generation(tmp_path: Path):
         "NIX_FLAKE_OVERRIDE_INPUTS": "foo=./bar",
     }
     (tmp_path / "bar").mkdir()
-    script = "flake_overrides_install_wrappers . develop build run; ls -1 .direnv/bin; printf '\n'; for f in .direnv/bin/*; do echo '---'; echo "$f"; cat "$f"; done"
+    script = "flake_overrides_install_wrappers . develop build run; ls -1 .direnv/bin; printf '\n'; for f in .direnv/bin/*; do echo '---'; echo \"$f\"; cat \"$f\"; done"
     cp = run_bash(script, cwd=tmp_path, env=env)
     assert cp.returncode == 0, cp.stderr
     listing, _, blobs = cp.stdout.partition("\n---\n")

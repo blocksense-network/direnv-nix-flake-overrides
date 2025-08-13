@@ -19,7 +19,7 @@
             pkgs.nixVersions.stable
             pkgs.shellcheck
             pkgs.git
-            (pkgs.python312.withPackages (ps: with ps; [ pytest pexpect packaging ]))
+            (pkgs.python312.withPackages (ps: with ps; [ pytest pytest-timeout pexpect packaging ]))
           ];
         };
       }
