@@ -14,21 +14,9 @@ jobs:
         uses: cachix/install-nix-action@v27
         with:
           nix_path: nixpkgs=channel:nixos-24.05
-      - name: Use direnv in CI
+      - name: Run tests in dev shell
         run: |
-          echo 'use flake' > .envrc
-      - name: direnv allow
-        run: |
-          eval "$(direnv hook bash)"
-          direnv allow .
-      - name: Run tests
-        shell: bash -l {0}
-        run: |
-          eval "$(direnv hook bash)"
-          direnv reload
-          python --version
-          pytest -q
+          nix develop -c bash -lc 'python --version && pytest -q'
       - name: Lint
         run: |
-          eval "$(direnv hook bash)"
-          shellcheck plugin/flake-overrides.bash
+          nix develop -c shellcheck plugin/flake-overrides.bash
