@@ -78,7 +78,7 @@ _nfo_out_append() {
 flake_override_input_args() {
   local _out_name="$1"; [[ -z "$_out_name" ]] && { echo "need OUT_ARR" >&2; return 2; }
   local -n _out="$_out_name"; _out=()
-  local _emit() {
+  _emit() {
     local name="$1" val="$2"
     local ref; ref="$(_nfo_resolve_ref "$val")"
     _out+=( --override-input "$name" "$ref" )
@@ -90,7 +90,7 @@ flake_override_input_args() {
 flake_override_flake_args() {
   local _out_name="$1"; [[ -z "$_out_name" ]] && { echo "need OUT_ARR" >&2; return 2; }
   local -n _out="$_out_name"; _out=()
-  local _emit() {
+  _emit() {
     local orig="$1" val="$2"
     local ref; ref="$(_nfo_resolve_ref "$val")"
     _out+=( --override-flake "$orig" "$ref" )
