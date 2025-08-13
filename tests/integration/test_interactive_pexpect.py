@@ -49,11 +49,12 @@ def test_interactive_direnv_session(tmp_path: Path):
     # Now use direnv exec to call the function inside a managed bash
     child.sendline("direnv exec . bash -lc 'OUT=$(flake_override_args_quoted); printf \"__BEGIN__%s__END__\\n\" \"$OUT\"' && echo DONE")
     child.expect("DONE\r?\n")
-    # Extract between markers
+    # Extract between the last markers (to avoid matching the echoed command)
     output = child.before
-    if "__BEGIN__" in output and "__END__" in output:
-        output = output.split("__BEGIN__", 1)[1]
-        output = output.split("__END__", 1)[0]
+    b = output.rfind("__BEGIN__")
+    e = output.rfind("__END__")
+    if b != -1 and e != -1 and e > b:
+        output = output[b + len("__BEGIN__"):e]
     args_output = output.strip().split()
     assert args_output[:2] == ["--override-input", "mylib"]
     assert args_output[2].startswith("path:/")
