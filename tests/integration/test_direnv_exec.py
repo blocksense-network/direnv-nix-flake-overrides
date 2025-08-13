@@ -53,7 +53,7 @@ def test_direnv_exec_loads_plugin_and_emits_args(tmp_path: Path):
     # Generate wrappers within the managed shell
     _ = run([
         "direnv", "exec", str(project), "bash", "-lc",
-        f"cd '{project}'; source '{PLUGIN}'; flake_overrides_install_wrappers .",
+        f"cd '{project}'; source '{PLUGIN}'; export NIX_FLAKE_OVERRIDE_INPUTS=\"mylib=./lib;foo/nixpkgs=github:NixOS/nixpkgs/nixos-24.05\"; export NIX_FLAKE_OVERRIDE_FLAKES=\"nixpkgs=github:NixOS/nixpkgs/nixos-24.05\"; flake_overrides_install_wrappers .",
     ])
     cp_ls = run(["direnv", "exec", str(project), "bash", "-lc", f"cd '{project}'; ls -1 .direnv/bin"])
     assert cp_ls.returncode == 0, cp_ls.stderr
