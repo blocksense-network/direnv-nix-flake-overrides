@@ -46,15 +46,14 @@ def test_interactive_direnv_session(tmp_path: Path):
     output = child.before
     assert "ndev" in output and "nbuild" in output and "nrun" in output
 
-    # Now use direnv exec to call the function inside a managed bash
-    child.sendline("direnv exec . bash -lc 'OUT=$(flake_override_args_quoted); printf \"__BEGIN__%s__END__\\n\" \"$OUT\"' && echo DONE")
-    child.expect("DONE\r?\n")
-    # Extract between the last markers (to avoid matching the echoed command)
+    # Now print markers and the quoted args in between, captured from interactive session
+    child.sendline("direnv exec . bash -lc 'echo __BEGIN__; flake_override_args_quoted; echo __END__'")
+    child.expect("__END__\r?\n")
+    # Capture everything printed before the END marker, then slice after BEGIN
     output = child.before
     b = output.rfind("__BEGIN__")
-    e = output.rfind("__END__")
-    if b != -1 and e != -1 and e > b:
-        output = output[b + len("__BEGIN__"):e]
+    if b != -1:
+        output = output[b + len("__BEGIN__"):]
     args_output = output.strip().split()
     assert args_output[:2] == ["--override-input", "mylib"]
     assert args_output[2].startswith("path:/")
