@@ -13,9 +13,10 @@ def run_bash(script: str, cwd: Path | None = None, env: dict | None = None) -> s
     merged_env = os.environ.copy()
     if env:
         merged_env.update(env)
+    bash_bin = merged_env.get("BASH_BINARY", "bash")
     bash_script = f"set -euo pipefail\nlog_status(){{ :; }}\nsource '{PLUGIN}'\n{script}\n"
     return subprocess.run(
-        ["bash", "-lc", bash_script],
+        [bash_bin, "-lc", bash_script],
         cwd=str(cwd) if cwd else None,
         env=merged_env,
         text=True,
@@ -78,3 +79,150 @@ def test_wrapper_script_generation(tmp_path: Path):
         assert os.access(p, os.X_OK)
         content = p.read_text()
         assert "exec nix" in content
+
+
+def test_malformed_entries_ignored(tmp_path: Path):
+    # Create only one valid local dir and one valid ref; malformed entries should be ignored silently
+    (tmp_path / "x").mkdir()
+    env = {
+        "NIX_FLAKE_OVERRIDE_INPUTS": "good=./x;bad;=noval;trailing=;also=github:owner/repo",
+    }
+    script = (
+        "flake_override_args ARGS; "
+        "for ((i=0; i<${#ARGS[@]}; i+=3)); do printf '%s|%s|%s\n' \"${ARGS[i]}\" \"${ARGS[i+1]}\" \"${ARGS[i+2]}\"; done"
+    )
+    cp = run_bash(script, cwd=tmp_path, env=env)
+    assert cp.returncode == 0, cp.stderr
+    lines = [l for l in cp.stdout.strip().splitlines() if l]
+    # Expect exactly two input override triplets: good and also
+    assert len(lines) == 2
+    flag1, name1, val1 = lines[0].split("|")
+    flag2, name2, val2 = lines[1].split("|")
+    assert flag1 == flag2 == "--override-input"
+    assert {name1, name2} == {"good", "also"}
+    # good resolves to path:/ABS, also remains literal ref
+    assert val1.startswith("path:/") or val2.startswith("path:/")
+    assert (val1 == "github:owner/repo") or (val2 == "github:owner/repo")
+
+
+def test_combined_inputs_then_flakes_order(tmp_path: Path):
+    (tmp_path / "lib").mkdir()
+    env = {
+        "NIX_FLAKE_OVERRIDE_INPUTS": "mylib=./lib",
+        "NIX_FLAKE_OVERRIDE_FLAKES": "nixpkgs=github:NixOS/nixpkgs/nixos-24.05",
+    }
+    script = "flake_override_args ARGS; printf '%s\n' \"${ARGS[@]}\""
+    cp = run_bash(script, cwd=tmp_path, env=env)
+    assert cp.returncode == 0, cp.stderr
+    tokens = cp.stdout.strip().splitlines()
+    # Find indices of flags
+    input_idxs = [i for i, t in enumerate(tokens) if t == "--override-input"]
+    flake_idxs = [i for i, t in enumerate(tokens) if t == "--override-flake"]
+    assert input_idxs and flake_idxs
+    assert max(input_idxs) < min(flake_idxs), "inputs should precede flakes"
+
+
+def test_quoting_edge_cases_in_args_and_wrappers(tmp_path: Path):
+    # Directory with space; flake ref containing $HOME should remain literal when evaluated
+    weird_dir = tmp_path / "my lib"
+    weird_dir.mkdir()
+    env = {
+        "NIX_FLAKE_OVERRIDE_INPUTS": "mylib=./my lib",
+        "NIX_FLAKE_OVERRIDE_FLAKES": "orig=github:owner/repo?query=$HOME&x=1",
+    }
+    # Inspect array values directly to ensure elements are preserved
+    script_array = (
+        "flake_override_args ARGS; "
+        "for ((i=0; i<${#ARGS[@]}; i++)); do printf '%s\n' \"${ARGS[i]}\"; done"
+    )
+    cp = run_bash(script_array, cwd=tmp_path, env=env)
+    assert cp.returncode == 0, cp.stderr
+    elems = cp.stdout.strip().splitlines()
+    # Find the value for mylib
+    try:
+        i = elems.index("mylib")
+    except ValueError:
+        raise AssertionError(f"mylib key not found in args: {elems}")
+    path_val = elems[i + 1]
+    assert path_val.startswith("path:/"), path_val
+    assert " " in path_val, "space should be present in path element"
+    # Ensure $HOME is preserved literally in flake override value
+    j = elems.index("orig")
+    flake_val = elems[j + 1]
+    assert "$HOME" in flake_val
+
+    # Now generate wrappers and ensure escaping appears (space and $ are escaped)
+    cp2 = run_bash("flake_overrides_install_wrappers .; cat .direnv/bin/ndev", cwd=tmp_path, env=env)
+    assert cp2.returncode == 0, cp2.stderr
+    content = cp2.stdout
+    assert "exec nix develop" in content
+    assert "\\ " in content or "' '" in content  # space escaped in args
+    assert "\\$HOME" in content  # dollar sign escaped by %q
+
+
+def test_nonexistent_dir_passes_through_literal(tmp_path: Path):
+    env = {
+        "NIX_FLAKE_OVERRIDE_INPUTS": "ghost=./does-not-exist",
+    }
+    script = (
+        "flake_override_input_args ARGS; "
+        "printf '%s\n' \"${ARGS[@]}\""
+    )
+    cp = run_bash(script, cwd=tmp_path, env=env)
+    assert cp.returncode == 0, cp.stderr
+    toks = cp.stdout.strip().splitlines()
+    assert toks[:2] == ["--override-input", "ghost"]
+    assert toks[2] == "./does-not-exist", toks[2]
+
+
+def test_direnv_dir_relative_resolution(tmp_path: Path):
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "lib").mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    env = {
+        "DIRENV_DIR": str(project),
+        "NIX_FLAKE_OVERRIDE_INPUTS": "mylib=lib",
+    }
+    script = "flake_override_input_args ARGS; printf '%s\n' \"${ARGS[@]}\""
+    cp = run_bash(script, cwd=elsewhere, env=env)
+    assert cp.returncode == 0, cp.stderr
+    toks = cp.stdout.strip().splitlines()
+    assert toks[:2] == ["--override-input", "mylib"]
+    assert toks[2].startswith("path:/"), toks[2]
+    assert toks[2].endswith("/proj/lib")
+
+
+def test_custom_subcommands_wrappers(tmp_path: Path):
+    env = {"NIX_FLAKE_OVERRIDE_INPUTS": "foo=./bar"}
+    (tmp_path / "bar").mkdir()
+    script = (
+        "flake_overrides_install_wrappers . check tree; "
+        "echo __LS__; ls -1 .direnv/bin; echo __ENDLS__; "
+        "echo __NCHK__; sed -n '1,60p' .direnv/bin/ncheck; echo __ENDNCHK__; "
+        "echo __NTREE__; sed -n '1,60p' .direnv/bin/ntree; echo __ENDNTREE__"
+    )
+    cp = run_bash(script, cwd=tmp_path, env=env)
+    assert cp.returncode == 0, cp.stderr
+    out = cp.stdout
+    # Extract listing
+    assert "__LS__" in out and "__ENDLS__" in out
+    listing = out.split("__LS__", 1)[1].split("__ENDLS__", 1)[0].strip()
+    names = set([l.strip() for l in listing.splitlines() if l.strip()])
+    assert {"ncheck", "ntree"}.issubset(names)
+    # Extract script contents for sanity
+    nchk = out.split("__NCHK__", 1)[1].split("__ENDNCHK__", 1)[0]
+    ntree = out.split("__NTREE__", 1)[1].split("__ENDNTREE__", 1)[0]
+    assert "exec nix check" in nchk
+    assert "exec nix tree" in ntree
+
+
+def test_empty_envs_no_error():
+    env = {
+        "NIX_FLAKE_OVERRIDE_INPUTS": "",
+        "NIX_FLAKE_OVERRIDE_FLAKES": "",
+    }
+    cp = run_bash("flake_override_args_quoted", env=env)
+    assert cp.returncode == 0, cp.stderr
+    assert cp.stdout.strip() == ""

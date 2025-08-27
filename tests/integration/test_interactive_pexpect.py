@@ -38,7 +38,8 @@ def test_interactive_direnv_session(tmp_path: Path):
     )
 
     # Spawn an interactive bash with direnv hook
-    child = pexpect.spawn("bash", ["--noprofile", "--norc", "-i"], encoding="utf-8", timeout=120)
+    bash_bin = os.environ.get("BASH_BINARY", "bash")
+    child = pexpect.spawn(bash_bin, ["--noprofile", "--norc", "-i"], encoding="utf-8", timeout=120)
     child.expect_exact(["$", "#", ">", "%", "]$"])  # First prompt heuristic
     child.sendline('PS1="PEXPECT>$ "')
     child.expect_exact("PEXPECT>$ ")

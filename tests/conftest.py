@@ -8,8 +8,9 @@ import pytest
 
 def get_bash_version() -> Version | None:
     try:
+        bash_bin = os.environ.get("BASH_BINARY", "bash")
         cp = subprocess.run(
-            ["bash", "-lc", "printf '%s.%s' ${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}"],
+            [bash_bin, "-lc", "printf '%s.%s' ${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}"],
             text=True,
             capture_output=True,
             check=False,
