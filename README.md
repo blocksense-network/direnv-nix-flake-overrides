@@ -16,7 +16,8 @@ Add this to your project’s `.envrc`:
 ```bash
 # See https://direnv-flake-overrides.blocksense.network
 # Allows flake inputs to be easily overridden from your local .env file
-source_url "https://direnv-flake-overrides.blocksense.network/plugin" "sha256-T201iQ1RBFKG3lP2bBhaOQssJt5O9G9M3pHtHkLGXWg="
+source_url "https://direnv-flake-overrides.blocksense.network/plugin" \
+           "sha256-bqkWqI8UKTvRy8L26qLnT9Is6moil8SIx34ZZoPeR4E="
 
 # Optional: load overrides from .env
 dotenv_if_exists .env
@@ -133,24 +134,3 @@ Tip: Use inputs for dependencies declared inside your `flake.nix`. Use flake ove
   use flake . "${FO_ARGS[@]}"
   ```
 
----
-
-## Examples
-
-### Example `.env`
-
-```dotenv
-# Point a flake input to a local checkout of a popular helper flake,
-# and pin nixpkgs via a registry override
-NIX_FLAKE_OVERRIDE_INPUTS='flake-parts=../flake-parts'
-NIX_FLAKE_OVERRIDE_FLAKES='nixpkgs=github:NixOS/nixpkgs/nixos-25.05'
-```
-
-### Example `.envrc`
-
-```bash
-source_url "https://direnv-flake-overrides.blocksense.network/plugin" "sha256-T201iQ1RBFKG3lP2bBhaOQssJt5O9G9M3pHtHkLGXWg="
-dotenv_if_exists .env
-eval "use flake . $(flake-override-args-quoted)"
-watch_file .env
-```
