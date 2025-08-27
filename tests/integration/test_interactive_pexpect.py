@@ -60,7 +60,7 @@ def test_interactive_direnv_session(tmp_path: Path):
     child.sendline("direnv exec . bash -lc 'ls -1 .direnv/bin; echo OK'")
     child.expect("OK\r?\n")
     output = child.before
-    assert "ndev" in output and "nbuild" in output and "nrun" in output
+    assert "local-nix-develop" in output and "local-nix-build" in output and "local-nix-run" in output
 
     child.sendline("exit")
     child.expect(pexpect.EOF)

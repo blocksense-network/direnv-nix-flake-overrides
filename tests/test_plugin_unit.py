@@ -62,23 +62,20 @@ def test_flake_overrides_to_override_flake_pairs():
 
 
 def test_wrapper_script_generation(tmp_path: Path):
-    env = {
-        "NIX_FLAKE_OVERRIDE_INPUTS": "foo=./bar",
-    }
+    env = {"NIX_FLAKE_OVERRIDE_INPUTS": "foo=./bar"}
     (tmp_path / "bar").mkdir()
-    script = "flake_overrides_install_wrappers . develop build run; ls -1 .direnv/bin; printf '\n'; for f in .direnv/bin/*; do echo '---'; echo \"$f\"; cat \"$f\"; done"
+    # Auto-install should happen on source; list the autoinstall dir
+    script = "ls -1 .direnv/local-flake-overrides/bin; printf '\n'; for f in .direnv/local-flake-overrides/bin/*; do echo '---'; echo \"$f\"; cat \"$f\"; done"
     cp = run_bash(script, cwd=tmp_path, env=env)
     assert cp.returncode == 0, cp.stderr
     listing, _, blobs = cp.stdout.partition("\n---\n")
     names = set(listing.strip().splitlines())
-    assert {"ndev", "nbuild", "nrun"}.issubset(names)
-    # Ensure files are executable and contain an exec nix line
-    for name in ["ndev", "nbuild", "nrun"]:
-        p = tmp_path / ".direnv" / "bin" / name
-        assert p.exists()
+    assert {"with-local-flake-overrides", "flake-override-args-quoted"}.issubset(names)
+    # Ensure files are executable
+    for name in ["with-local-flake-overrides", "flake-override-args-quoted"]:
+        p = tmp_path / ".direnv" / "local-flake-overrides" / "bin" / name
+        assert p.exists(), name
         assert os.access(p, os.X_OK)
-        content = p.read_text()
-        assert "exec nix" in content
 
 
 def test_malformed_entries_ignored(tmp_path: Path):
@@ -151,11 +148,11 @@ def test_quoting_edge_cases_in_args_and_wrappers(tmp_path: Path):
     flake_val = elems[j + 1]
     assert "$HOME" in flake_val
 
-    # Now generate wrappers and ensure escaping appears (space and $ are escaped)
-    cp2 = run_bash("flake_overrides_install_wrappers .; cat .direnv/bin/ndev", cwd=tmp_path, env=env)
+    # Now ensure the baked CLI printer escapes as expected (space and $ are escaped)
+    cp2 = run_bash("sed -n '1,40p' .direnv/local-flake-overrides/bin/flake-override-args-quoted", cwd=tmp_path, env=env)
     assert cp2.returncode == 0, cp2.stderr
     content = cp2.stdout
-    assert "exec nix develop" in content
+    # It's a small script that prints a pre-quoted string; ensure it contains escaped space and $HOME
     assert "\\ " in content or "' '" in content  # space escaped in args
     assert "\\$HOME" in content  # dollar sign escaped by %q
 
@@ -194,28 +191,66 @@ def test_direnv_dir_relative_resolution(tmp_path: Path):
     assert toks[2].endswith("/proj/lib")
 
 
-def test_custom_subcommands_wrappers(tmp_path: Path):
+def test_collect_cli_outputs_words(tmp_path: Path):
+    # Ensure the newline-delimited collector produces words that can be mapped into an array
+    (tmp_path / "lib").mkdir()
+    env = {
+        "NIX_FLAKE_OVERRIDE_INPUTS": "mylib=./lib",
+        "NIX_FLAKE_OVERRIDE_FLAKES": "override-me=github:owner/repo",
+    }
+    # Use the collector and verify first tokens
+    cp = run_bash(".direnv/local-flake-overrides/bin/collect-flake-override-args", cwd=tmp_path, env=env)
+    assert cp.returncode == 0, cp.stderr
+    words = cp.stdout.strip().splitlines()
+    assert words[:2] == ["--override-input", "mylib"]
+    assert words[3:5] == ["--override-flake", "override-me"]
+
+
+def test_leader_supports_custom_subcommands(tmp_path: Path):
     env = {"NIX_FLAKE_OVERRIDE_INPUTS": "foo=./bar"}
     (tmp_path / "bar").mkdir()
+    # Use a nix stub to capture arguments
+    (tmp_path / "bin").mkdir()
+    nix_stub = tmp_path / "bin" / "nix"
+    nix_stub.write_text("#!/usr/bin/env bash\nfor a in \"$@\"; do echo \"$a\"; done\n")
+    nix_stub.chmod(0o755)
+    env["PATH"] = f"{tmp_path / 'bin'}:" + os.environ.get("PATH", "")
+    script = ".direnv/local-flake-overrides/bin/with-local-flake-overrides nix tree -I nixpkgs=."
+    cp = run_bash(script, cwd=tmp_path, env=env)
+    assert cp.returncode == 0, cp.stderr
+    out = cp.stdout.strip().splitlines()
+    assert out[0] == "tree"
+    assert "--override-input" in out
+
+
+def test_leader_script_injects_flags_before_args(tmp_path: Path):
+    # Create a stub `nix` that echos its argv so we can verify positions
+    (tmp_path / "bin").mkdir()
+    nix_stub = tmp_path / "bin" / "nix"
+    nix_stub.write_text(
+        "#!/usr/bin/env bash\n" \
+        "for i in \"$@\"; do echo \"$i\"; done\n"
+    )
+    nix_stub.chmod(0o755)
+
+    env = {
+        "PATH": f"{tmp_path / 'bin'}:" + os.environ.get("PATH", ""),
+        "NIX_FLAKE_OVERRIDE_INPUTS": "mylib=./bar",
+    }
+    (tmp_path / "bar").mkdir()
+    # Install leader and run it
     script = (
-        "flake_overrides_install_wrappers . check tree; "
-        "echo __LS__; ls -1 .direnv/bin; echo __ENDLS__; "
-        "echo __NCHK__; sed -n '1,60p' .direnv/bin/ncheck; echo __ENDNCHK__; "
-        "echo __NTREE__; sed -n '1,60p' .direnv/bin/ntree; echo __ENDNTREE__"
+        "flake_overrides_install_leader; "
+        ".direnv/bin/with-local-flake-overrides nix build .#pkg --rebuild"
     )
     cp = run_bash(script, cwd=tmp_path, env=env)
     assert cp.returncode == 0, cp.stderr
-    out = cp.stdout
-    # Extract listing
-    assert "__LS__" in out and "__ENDLS__" in out
-    listing = out.split("__LS__", 1)[1].split("__ENDLS__", 1)[0].strip()
-    names = set([l.strip() for l in listing.splitlines() if l.strip()])
-    assert {"ncheck", "ntree"}.issubset(names)
-    # Extract script contents for sanity
-    nchk = out.split("__NCHK__", 1)[1].split("__ENDNCHK__", 1)[0]
-    ntree = out.split("__NTREE__", 1)[1].split("__ENDNTREE__", 1)[0]
-    assert "exec nix check" in nchk
-    assert "exec nix tree" in ntree
+    lines = [l for l in cp.stdout.strip().splitlines() if l]
+    # Expect: build <flags…> .#pkg --rebuild (first token printed by stub is subcommand)
+    assert lines[0] == "build"
+    assert "--override-input" in lines
+    # The flake ref and user flags should still be present
+    assert ".#pkg" in lines and "--rebuild" in lines
 
 
 def test_empty_envs_no_error():
