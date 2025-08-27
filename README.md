@@ -15,7 +15,7 @@ Add this to your project’s `.envrc`:
 
 ```bash
 # See https://direnv-flake-overrides.blocksense.network
-# Allows flake inputs to be easily overriden from your local .env file
+# Allows flake inputs to be easily overridden from your local .env file
 source_url "https://direnv-flake-overrides.blocksense.network/plugin" "sha256-T201iQ1RBFKG3lP2bBhaOQssJt5O9G9M3pHtHkLGXWg="
 
 # Optional: load overrides from .env
@@ -39,7 +39,7 @@ watch_file .env
 ## Requirements
 
 - direnv ≥ 2.30
-- bash ≥ 4.4
+- bash ≥ 3.2 (macOS default is fine)
 - Nix ≥ 2.18 (flakes enabled)
 
 ---
@@ -58,7 +58,7 @@ Example:
 
 ```dotenv
 # .env
-NIX_FLAKE_OVERRIDE_INPUTS='mylib=../my-lib;foo/nixpkgs=github:NixOS/nixpkgs/nixos-24.05'
+NIX_FLAKE_OVERRIDE_INPUTS='mylib=../my-lib|foo/nixpkgs=github:NixOS/nixpkgs/nixos-25.05'
 ```
 
 Effect (conceptually):
@@ -76,7 +76,7 @@ Example:
 
 ```dotenv
 # .env
-NIX_FLAKE_OVERRIDE_FLAKES='nixpkgs=github:NixOS/nixpkgs/nixos-24.05;myfork=github:blocksense-network/fork'
+NIX_FLAKE_OVERRIDE_FLAKES='nixpkgs=github:NixOS/nixpkgs/nixos-25.05|myfork=github:blocksense-network/fork'
 ```
 
 Effect:
@@ -126,15 +126,11 @@ Tip: Use inputs for dependencies declared inside your `flake.nix`. Use flake ove
 
   Why arrays: lets you merge, reorder, or filter the flags in Bash without dealing with quoting or string parsing.
 
----
-
-## Compatibility Notes
-
-- Works alongside `nix-direnv`. You can replace a plain `use flake .` with the splice-enabled form above; caching still applies.
-- If your flake reads environment variables (e.g., via `builtins.getEnv`), add `--impure` after `use flake`, for example:
+  Note for macOS Bash 3.2 (no mapfile):
 
   ```bash
-  use flake . --impure "${FO_ARGS[@]}"
+  FO_ARGS=(); while IFS= read -r w; do FO_ARGS+=("$w"); done < <(collect-flake-override-args)
+  use flake . "${FO_ARGS[@]}"
   ```
 
 ---
@@ -147,7 +143,7 @@ Tip: Use inputs for dependencies declared inside your `flake.nix`. Use flake ove
 # Point a flake input to a local checkout of a popular helper flake,
 # and pin nixpkgs via a registry override
 NIX_FLAKE_OVERRIDE_INPUTS='flake-parts=../flake-parts'
-NIX_FLAKE_OVERRIDE_FLAKES='nixpkgs=github:NixOS/nixpkgs/nixos-24.05'
+NIX_FLAKE_OVERRIDE_FLAKES='nixpkgs=github:NixOS/nixpkgs/nixos-25.05'
 ```
 
 ### Example `.envrc`
