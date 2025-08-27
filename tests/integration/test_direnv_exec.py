@@ -31,7 +31,7 @@ def test_direnv_exec_loads_plugin_and_emits_args(tmp_path: Path):
     project = tmp_path
     # Write .env
     (project / ".env").write_text(
-        "NIX_FLAKE_OVERRIDE_INPUTS='mylib=./lib;foo/nixpkgs=github:NixOS/nixpkgs/nixos-24.05'\n"
+        "NIX_FLAKE_OVERRIDE_INPUTS='mylib=./lib|foo/nixpkgs=github:NixOS/nixpkgs/nixos-24.05'\n"
         "NIX_FLAKE_OVERRIDE_FLAKES='nixpkgs=github:NixOS/nixpkgs/nixos-24.05'\n"
     )
     # Create a local directory to be resolved to path:/ABS
@@ -54,7 +54,7 @@ def test_direnv_exec_loads_plugin_and_emits_args(tmp_path: Path):
     bash_bin = os.environ.get("BASH_BINARY", "bash")
     cp_args = run([
         "direnv", "exec", str(project), "nix", "develop", "-c", bash_bin, "-lc",
-        f"cd '{project}'; log_status(){{ :; }}; source '{PLUGIN}'; export NIX_FLAKE_OVERRIDE_INPUTS=\"mylib=./lib;foo/nixpkgs=github:NixOS/nixpkgs/nixos-24.05\"; export NIX_FLAKE_OVERRIDE_FLAKES=\"nixpkgs=github:NixOS/nixpkgs/nixos-24.05\"; flake_override_args_quoted",
+        f"cd '{project}'; log_status(){{ :; }}; source '{PLUGIN}'; export NIX_FLAKE_OVERRIDE_INPUTS=\"mylib=./lib|foo/nixpkgs=github:NixOS/nixpkgs/nixos-24.05\"; export NIX_FLAKE_OVERRIDE_FLAKES=\"nixpkgs=github:NixOS/nixpkgs/nixos-24.05\"; flake_override_args_quoted",
     ])
     if cp_args.returncode != 0:
         pytest.skip(f"direnv exec nix develop not usable here: {cp_args.stderr}")
@@ -68,18 +68,8 @@ def test_direnv_exec_loads_plugin_and_emits_args(tmp_path: Path):
         assert cp_chk.returncode == 0, f"expected directory {out[2]} to exist"
     assert "--override-flake" in out
 
-    # Ensure wrappers exist in the project and contain path:/ coercion
-    # Generate wrappers within the managed shell
-    _ = run([
-        "direnv", "exec", str(project), "nix", "develop", "-c", bash_bin, "-lc",
-        f"cd '{project}'; log_status(){{ :; }}; source '{PLUGIN}'; export NIX_FLAKE_OVERRIDE_INPUTS=\"mylib=./lib;foo/nixpkgs=github:NixOS/nixpkgs/nixos-24.05\"; export NIX_FLAKE_OVERRIDE_FLAKES=\"nixpkgs=github:NixOS/nixpkgs/nixos-24.05\"; flake_overrides_install_wrappers .",
-    ])
-    cp_ls = run(["direnv", "exec", str(project), "bash", "-lc", f"cd '{project}'; ls -1 .direnv/bin"])
+    # Ensure auto-installed helpers exist
+    cp_ls = run(["direnv", "exec", str(project), "bash", "-lc", f"cd '{project}'; ls -1 .direnv/local-flake-overrides/bin"],)
     assert cp_ls.returncode == 0, cp_ls.stderr
     names = set(cp_ls.stdout.strip().splitlines())
-    assert {"local-nix-develop", "local-nix-build", "local-nix-run"}.issubset(names)
-    cp_cat = run(["direnv", "exec", str(project), "bash", "-lc", f"cd '{project}'; sed -n '1,80p' .direnv/bin/local-nix-develop"])
-    assert cp_cat.returncode == 0, cp_cat.stderr
-    content = cp_cat.stdout
-    assert "exec nix develop" in content
-    assert "path:/" in content
+    assert {"with-local-flake-overrides", "flake-override-args-quoted", "collect-flake-override-args"}.issubset(names)

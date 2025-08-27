@@ -5,33 +5,29 @@
 #   - NIX_FLAKE_OVERRIDE_INPUTS  => multiple --override-input <input> <ref>
 #   - NIX_FLAKE_OVERRIDE_FLAKES  => multiple --override-flake <orig> <resolved>
 #
-# Primary API (recommended):
-#   flake_override_args OUT_ARR
-#     -> fills bash array OUT_ARR with all flags (inputs + flakes)
+# Primary usage:
+#   - Inline: eval "use flake . $(flake-override-args-quoted)"
+#   - Arrays without eval: map words from collect-flake-override-args
 #
-# Secondary APIs:
-#   flake_override_input_args OUT_ARR   # inputs only
-#   flake_override_flake_args OUT_ARR   # registry overrides only
-#   flake_override_args_quoted          # prints flags shell-escaped for eval
-#   flake_overrides_install_wrappers [flake='.'] (legacy/optional)
-#     -> emits .direnv/bin/{local-nix-develop,local-nix-build,local-nix-run}
-#        plus a helper printer .direnv/bin/flake-override-args-quoted (baked)
-#   flake_overrides_install_leader [name='with-local-flake-overrides'] (legacy/optional)
-#     -> emits .direnv/bin/<name> that injects overrides into `nix <subcmd> ...`
+# Public CLI helpers (auto-generated on source):
+#   - flake-override-args-quoted          # prints flags shell-escaped for inline eval
+#   - collect-flake-override-args         # prints one word per line (for mapfile/loops)
+#   - with-local-flake-overrides          # leader for ad‑hoc `nix <subcmd>` usage
 #
 # On source: auto-install lightweight tools under .direnv/local-flake-overrides/bin
 #  - with-local-flake-overrides
 #  - flake-override-args-quoted
 # and add that directory to PATH (via PATH_add if available).
 #
-# Requirements: bash >= 4.4, direnv >= 2.30, nix >= 2.18
+# Requirements: direnv >= 2.30, nix >= 2.18
+# Bash compatibility: Bash >= 3.2
 
 set -o pipefail
 
 # --- Internals --------------------------------------------------------------
 _direnv_nfo_log() { log_status "flake-overrides: $*"; }
 
-# Convert a semicolon-delimited KV list VAR (e.g., name=val;foo=bar) into
+# Convert a delimited KV list VAR (e.g., name=val|foo=bar) into
 # pairs via callback: _nfo_each_kv VAR_NAME callback
 # callback receives: name value
 _nfo_each_kv() {
@@ -44,8 +40,15 @@ _nfo_each_kv() {
   _raw="${!_var_name}"
   (( _had_u )) && set -u
   [[ -z "$_raw" ]] && return 0
-  local IFS=';'
-  # Read into array of entries split on semicolons
+  # Choose a delimiter not valid in URLs: prefer '|' normally, but if '^' is present, use '^'
+  local _delim='|'
+  case "$_raw" in
+    *'^'*) _delim='^' ;;
+    *'|'*) _delim='|' ;;
+    *) _delim='|' ;;
+  esac
+  local IFS="$_delim"
+  # Read into array of entries split on the chosen delimiter
   read -r -a _entries <<< "$_raw"
   local _entry _name _val
   for _entry in "${_entries[@]}"; do
@@ -87,136 +90,22 @@ _nfo_resolve_ref() {
   printf '%s' "$_val"
 }
 
-# Append words to an OUT array by nameref
-_nfo_out_append() {
-  local _out_name="$1"; shift
-  local -n _out="$_out_name"
-  _out+=("$@")
-}
+# ---
 
-# --- Public builders --------------------------------------------------------
-
-# Build --override-input pairs from $NIX_FLAKE_OVERRIDE_INPUTS
-flake_override_input_args() {
-  local _out_name="$1"; [[ -z "$_out_name" ]] && { echo "need OUT_ARR" >&2; return 2; }
-  local -n _out="$_out_name"; _out=()
-  _emit() {
-    local name="$1" val="$2"
-    local ref; ref="$(_nfo_resolve_ref "$val")"
-    _out+=( --override-input "$name" "$ref" )
-  }
-  _nfo_each_kv NIX_FLAKE_OVERRIDE_INPUTS _emit
-}
-
-# Build --override-flake pairs from $NIX_FLAKE_OVERRIDE_FLAKES
-flake_override_flake_args() {
-  local _out_name="$1"; [[ -z "$_out_name" ]] && { echo "need OUT_ARR" >&2; return 2; }
-  local -n _out="$_out_name"; _out=()
-  _emit() {
-    local orig="$1" val="$2"
-    local ref; ref="$(_nfo_resolve_ref "$val")"
-    _out+=( --override-flake "$orig" "$ref" )
-  }
-  _nfo_each_kv NIX_FLAKE_OVERRIDE_FLAKES _emit
-}
-
-# Combine both kinds of overrides
-flake_override_args() {
-  local _out_name="$1"; [[ -z "$_out_name" ]] && { echo "need OUT_ARR" >&2; return 2; }
-  local -n _out="$_out_name"; _out=()
-  local A=() B=()
-  flake_override_input_args A
-  flake_override_flake_args B
-  # Append preserving order: inputs then flakes
-  _out+=("${A[@]}")
-  _out+=("${B[@]}")
-}
+# ---
 
 # Print shell-escaped override args (for `eval` use if desired)
 flake_override_args_quoted() {
-  local ARGS=()
-  flake_override_args ARGS
-  local w
-  for w in "${ARGS[@]}"; do printf '%q ' "$w"; done
+  # Print shell-escaped override args without relying on nameref arrays
+  _nfo_print_word() { local s="$1"; s=${s//\'/\'\\\'\'}; printf "'%s' " "$s"; }
+  _nfo_print_pair() { _nfo_print_word "$1"; _nfo_print_word "$2"; _nfo_print_word "$3"; }
+  _nfo_emit_in() { local name="$1" val="$2"; local ref; ref="$(_nfo_resolve_ref "$val")"; _nfo_print_pair --override-input "$name" "$ref"; }
+  _nfo_emit_fk() { local orig="$1" val="$2"; local ref; ref="$(_nfo_resolve_ref "$val")"; _nfo_print_pair --override-flake "$orig" "$ref"; }
+  _nfo_each_kv NIX_FLAKE_OVERRIDE_INPUTS _nfo_emit_in
+  _nfo_each_kv NIX_FLAKE_OVERRIDE_FLAKES _nfo_emit_fk
 }
 
-# Generate wrapper scripts into .direnv/bin and bake in current overrides
-# Usage: flake_overrides_install_wrappers [flake='.'] [subcmd ...]
-# Default subcmds: develop build run
-flake_overrides_install_wrappers() {
-  local flake="${1:-.}"; shift || true
-  local -a subcmds
-  if (( $# > 0 )); then
-    subcmds=("$@")
-  else
-    subcmds=(develop build run)
-  fi
-  local argsq; argsq="$(flake_override_args_quoted)"
-  mkdir -p .direnv/bin
-  for sub in "${subcmds[@]}"; do
-    local name
-    case "$sub" in
-      develop) name=local-nix-develop ;;
-      build)   name=local-nix-build ;;
-      run)     name=local-nix-run ;;
-      *)       name="local-nix-$sub" ;;
-    esac
-    cat > ".direnv/bin/$name" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-# Rehydrate precomputed override args, then append any user args.
-eval "set -- $argsq \"$@\""
-exec nix $sub ${flake@Q} "$@"
-EOF
-    chmod +x ".direnv/bin/$name"
-  done
-
-  # Also provide a baked printer with a command-style name for convenience
-  cat > .direnv/bin/flake-override-args-quoted <<EOF
-#!/usr/bin/env bash
-# Prints the baked, shell-escaped override args
-printf '%s' "$argsq"
-EOF
-  chmod +x .direnv/bin/flake-override-args-quoted
-}
-
-# Leader that injects overrides into nix invocations generically.
-# Usage: with-local-flake-overrides nix <subcmd> [args...]
-flake_overrides_install_leader() {
-  local name="${1:-with-local-flake-overrides}"
-  local argsq; argsq="$(flake_override_args_quoted)"
-  mkdir -p .direnv/bin
-  cat > ".direnv/bin/$name" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-argsq='__ARGSQ_PLACEHOLDER__'
-if (( $# == 0 )); then
-  echo "usage: with-local-flake-overrides nix <subcmd> [args...]" >&2
-  exit 2
-fi
-if [[ "$1" != "nix" ]]; then
-  # Not a nix invocation; run as-is
-  exec "$@"
-fi
-cmd="$1"; shift || true
-sub="${1-}"
-if [[ -z "$sub" ]]; then
-  # No subcommand; just append flags to whatever follows (if anything)
-  declare -a OV=()
-  eval "OV=($argsq)"
-  exec "$cmd" "${OV[@]}" "$@"
-fi
-shift || true
-# Insert subcommand first, then overrides, then remaining args using arrays
-declare -a OV=()
-eval "OV=($argsq)"
-exec "$cmd" "$sub" "${OV[@]}" "$@"
-EOF
-  # Inject the precomputed args into the file safely
-  # shellcheck disable=SC2001
-  sed -i.bak "s|__ARGSQ_PLACEHOLDER__|$(printf '%s' "$argsq" | sed 's/[\&/]/\\&/g')|" ".direnv/bin/$name" && rm -f ".direnv/bin/$name.bak"
-  chmod +x ".direnv/bin/$name"
-}
+# Auto-tools are generated on source
 
 # Auto-install minimal tools into .direnv/local-flake-overrides/bin and add to PATH
 _nfo_autoinstall_tools() {
@@ -228,47 +117,46 @@ _nfo_autoinstall_tools() {
   if [[ ! -f "$base_dir/.gitignore" ]]; then
     printf '*\n!.gitignore\n' > "$base_dir/.gitignore" || true
   fi
-  # Baked CLI printer with args injected safely
-  cat > "$bindir/flake-override-args-quoted" <<'EOF'
-#!/usr/bin/env bash
-argsq='__ARGSQ_PLACEHOLDER__'
-printf '%s' "$argsq"
-EOF
-  sed -i.bak "s|__ARGSQ_PLACEHOLDER__|$(printf '%s' "$argsq" | sed 's/[\&/]/\\&/g')|" "$bindir/flake-override-args-quoted" && rm -f "$bindir/flake-override-args-quoted.bak"
-  chmod +x "$bindir/flake-override-args-quoted"
-  # Generic leader wrapper around nix subcommands (array-safe)
-  cat > "$bindir/with-local-flake-overrides" <<'EOF'
+  # Baked CLI printer using array literal for safety
+  cat > "$bindir/flake-override-args-quoted" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-argsq='__ARGSQ_PLACEHOLDER__'
-if (( $# == 0 )); then
+ARGS=( $argsq )
+for w in "\${ARGS[@]}"; do
+  s=\$w
+  s=\${s//\'/\'\\\'\'}
+  printf "'%s' " "\$s"
+done
+EOF
+  chmod +x "$bindir/flake-override-args-quoted"
+  # Generic leader wrapper around nix subcommands (array-safe)
+  cat > "$bindir/with-local-flake-overrides" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+OV=( $argsq )
+if (( \$# == 0 )); then
   echo "usage: with-local-flake-overrides nix <subcmd> [args...]" >&2
   exit 2
 fi
-if [[ "$1" != "nix" ]]; then
-  exec "$@"
+if [[ "\$1" != "nix" ]]; then
+  exec "\$@"
 fi
-cmd="$1"; shift || true
-sub="${1-}"
-if [[ -z "$sub" ]]; then
-  declare -a OV=(); eval "OV=($argsq)"; exec "$cmd" "${OV[@]}" "$@"
+cmd="\$1"; shift || true
+sub="\${1-}"
+if [[ -z "\$sub" ]]; then
+  exec "\$cmd" "\${OV[@]}" "\$@"
 fi
 shift || true
-declare -a OV=(); eval "OV=($argsq)"
-exec "$cmd" "$sub" "${OV[@]}" "$@"
+exec "\$cmd" "\$sub" "\${OV[@]}" "\$@"
 EOF
-  # Inject args safely
-  sed -i.bak "s|__ARGSQ_PLACEHOLDER__|$(printf '%s' "$argsq" | sed 's/[\&/]/\\&/g')|" "$bindir/with-local-flake-overrides" && rm -f "$bindir/with-local-flake-overrides.bak"
   chmod +x "$bindir/with-local-flake-overrides"
   # Newline-delimited collector (for arrays without eval): mapfile -t ARGS < <(collect-flake-override-args)
-  cat > "$bindir/collect-flake-override-args" <<'EOF'
+  cat > "$bindir/collect-flake-override-args" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-argsq='__ARGSQ_PLACEHOLDER__'
-eval "set -- $argsq"
-printf '%s\n' "$@"
+ARGS=( $argsq )
+printf '%s\n' "\${ARGS[@]}"
 EOF
-  sed -i.bak "s|__ARGSQ_PLACEHOLDER__|$(printf '%s' "$argsq" | sed 's/[\&/]/\\&/g')|" "$bindir/collect-flake-override-args" && rm -f "$bindir/collect-flake-override-args.bak"
   chmod +x "$bindir/collect-flake-override-args"
   # PATH
   if command -v PATH_add >/dev/null 2>&1; then

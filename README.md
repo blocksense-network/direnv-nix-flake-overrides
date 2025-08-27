@@ -46,7 +46,9 @@ watch_file .env
 
 ## Configure via `.env`
 
-Declare semicolon-delimited key=value pairs. Values can be local paths, `github:` refs, `https://…`, `git+file:///…`, or `path:/ABS`.
+Declare key=value pairs separated by a delimiter that is illegal in URLs. Use `|` (recommended). If you truly need `|` inside a value, use `^` as the delimiter.
+
+Values can be local paths, `github:` refs, `https://…`, `git+file:///…`, or `path:/ABS`.
 
 ### 1) Override flake inputs declared in your `flake.nix`
 

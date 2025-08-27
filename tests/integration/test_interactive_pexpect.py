@@ -27,8 +27,6 @@ def test_interactive_direnv_session(tmp_path: Path):
     (tmp_path / ".envrc").write_text(
         f"source '{PLUGIN}'\n"
         "dotenv_if_exists .env\n"
-        "flake_overrides_install_wrappers .\n"
-        "PATH_add .direnv/bin\n"
     )
 
     # Provide a minimal flake for nix develop inside direnv exec
@@ -63,13 +61,11 @@ def test_interactive_direnv_session(tmp_path: Path):
     child.sendline("direnv reload || true")
     child.expect_exact("PEXPECT>$ ")
 
-    # Create wrappers explicitly within managed env using the ambient nix develop from pytest
-    child.sendline(f"direnv exec . bash -lc 'source \"{PLUGIN}\"; cd \"$DIRENV_DIR\"; flake_overrides_install_wrappers .' && echo MADE")
-    child.expect("MADE\r?\n")
-    child.sendline("direnv exec . bash -lc 'ls -1 .direnv/bin; echo OK'")
+    # List auto-installed helpers in the managed env
+    child.sendline("direnv exec . bash -lc 'ls -1 .direnv/local-flake-overrides/bin; echo OK'")
     child.expect("OK\r?\n")
     output = child.before
-    assert "local-nix-develop" in output and "local-nix-build" in output and "local-nix-run" in output
+    assert "with-local-flake-overrides" in output and "flake-override-args-quoted" in output and "collect-flake-override-args" in output
 
     child.sendline("exit")
     child.expect(pexpect.EOF)

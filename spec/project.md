@@ -17,7 +17,6 @@ Use it to point flake inputs (and/or registry refs) to local paths, specific com
   * `flake-override-args-quoted` → prints safely quoted flags for inline eval
   * `collect-flake-override-args` → prints one arg per line for easy `mapfile`
   * `with-local-flake-overrides` → leader for ad‑hoc `nix <subcmd>` usage
-* **Legacy wrappers (optional)**: `local-nix-develop`, `local-nix-build`, `local-nix-run` can still be generated if desired.
 * **Path smarts**: directory values are resolved to absolute and coerced to `path:/ABS`.
 * **Safe quoting**: printer uses `printf %q` so baked scripts are robust.
 * **Zero-commit setup**: load via `source_url` pinned by hash and cached locally.
@@ -27,7 +26,7 @@ Use it to point flake inputs (and/or registry refs) to local paths, specific com
 ## Requirements
 
 * **direnv** v2.30+ (stdlib functions like `dotenv_if_exists`, `source_url`)
-* **bash** ≥ 4.4 (nameref `local -n`)
+* **bash** ≥ 3.2 (macOS default is fine)
 * **Nix** 2.18+ (flake commands)
 
 ---
@@ -64,7 +63,7 @@ watch_file .env
 
 ### 1) `NIX_FLAKE_OVERRIDE_INPUTS`
 
-Semicolon-delimited `name=ref` pairs mapping **input paths** to **flake refs**. Keys may include nested input paths like `foo/nixpkgs`.
+`name=ref` pairs separated by a delimiter that is illegal in URLs. Use `|` (recommended). If your value truly needs `|`, use `^` as the delimiter. Keys may include nested input paths like `foo/nixpkgs`.
 
 * Accepts directory paths → coerced to `path:/ABS`.
 * Accepts literal flake refs: `github:owner/repo`, `https://…`, `git+file:///…`, `path:/ABS`.
@@ -90,7 +89,7 @@ Semicolon-delimited `orig=resolved` pairs mapping **registry names/refs** to ano
 
 ```dotenv
 # .env
-NIX_FLAKE_OVERRIDE_FLAKES='nixpkgs=github:NixOS/nixpkgs/nixos-24.05;myfork=github:blocksense-network/fork'
+NIX_FLAKE_OVERRIDE_FLAKES='nixpkgs=github:NixOS/nixpkgs/nixos-24.05|myfork=github:blocksense-network/fork'
 ```
 
 **Effect**:
@@ -134,7 +133,7 @@ use flake . "${FO_ARGS[@]}"
 ## How it works
 
 * The plugin parses the env vars, resolves directory values to absolute paths, and constructs the appropriate `--override-input` / `--override-flake` flag pairs.
-* `flake_override_args OUT_ARR` fills a **bash array** so argument boundaries are preserved without quoting bugs.
+* For array usage, prefer the helper `collect-flake-override-args` and map it into an array (`mapfile -t` or a read loop) to preserve boundaries without quoting bugs.
 * Auto tools are generated on source: `flake-override-args-quoted`, `collect-flake-override-args`, and `with-local-flake-overrides`.
 
 ---
@@ -181,187 +180,23 @@ MIT © Blocksense Network
 
 ### `plugin/flake-overrides.bash`
 
-```bash
-#!/usr/bin/env bash
-# direnv-nix-flake-overrides
-#
-# Exposes helpers to translate two env vars into Nix flake CLI flags:
-#   - NIX_FLAKE_OVERRIDE_INPUTS  => multiple --override-input <input> <ref>
-#   - NIX_FLAKE_OVERRIDE_FLAKES  => multiple --override-flake <orig> <resolved>
-#
-# Primary usage:
-#   - Inline: eval "use flake . $(flake-override-args-quoted)"
-#   - Array:  mapfile -t ARGS < <(collect-flake-override-args); use flake . "${ARGS[@]}"
-#   - Leader: with-local-flake-overrides nix <subcmd> [...]
-#
-# Public functions (programmatic usage):
-#   flake_override_args OUT_ARR         # build all flags into OUT_ARR (inputs + flakes)
-#   flake_override_input_args OUT_ARR   # inputs only
-#   flake_override_flake_args OUT_ARR   # registry overrides only
-#   flake_override_args_quoted          # prints flags shell-escaped (for eval)
-#
-# Helpers (auto-generated on source):
-#   flake-override-args-quoted          # CLI printer for inline use
-#   collect-flake-override-args         # CLI printer, one word per line
-#   with-local-flake-overrides          # leader for nix subcommands
-#
-# Requirements: bash >= 4.4, direnv >= 2.30, nix >= 2.18
-
-set -o pipefail
-
-# --- Internals --------------------------------------------------------------
-_direnv_nfo_log() { log_status "flake-overrides: $*"; }
-
-# Convert a semicolon-delimited KV list VAR (e.g., name=val;foo=bar) into
-# pairs via callback: _nfo_each_kv VAR_NAME callback
-# callback receives: name value
-_nfo_each_kv() {
-  local _var_name="$1" _cb="$2"
-  local _raw
-  # indirect expansion to read the named variable
-  _raw="${!_var_name}"
-  [[ -z "$_raw" ]] && return 0
-  local IFS=';'
-  # Read into array of entries split on semicolons
-  read -r -a _entries <<< "$_raw"
-  local _entry _name _val
-  for _entry in "${_entries[@]}"; do
-    [[ -z "$_entry" ]] && continue
-    _name="${_entry%%=*}"
-    _val="${_entry#*=}"
-    if [[ -z "$_name" || -z "$_val" || "$_entry" == "$_name" ]]; then
-      _direnv_nfo_log "ignoring malformed entry: '$_entry'"
-      continue
-    fi
-    "$_cb" "$_name" "$_val"
-  done
-}
-
-# Resolve a value: if it's a directory, coerce to path:/ABS
-# else pass as-is.
-_nfo_resolve_ref() {
-  local _val="$1"
-  if [[ -d $_val ]]; then
-    local _abs
-    if _abs="$(cd "$_val" 2>/dev/null && pwd -P)"; then
-      [[ ! -f "$_abs/flake.nix" ]] && _direnv_nfo_log "warn '$_abs' has no flake.nix"
-      printf 'path:%s' "$_abs"
-      return 0
-    else
-      _direnv_nfo_log "cannot access dir '$_val'"
-    fi
-  fi
-  printf '%s' "$_val"
-}
-
-# Append words to an OUT array by nameref
-_nfo_out_append() {
-  local _out_name="$1"; shift
-  local -n _out="$_out_name"
-  _out+=("$@")
-}
-
-# --- Public builders --------------------------------------------------------
-
-# Build --override-input pairs from $NIX_FLAKE_OVERRIDE_INPUTS
-flake_override_input_args() {
-  local _out_name="$1"; [[ -z "$_out_name" ]] && { echo "need OUT_ARR" >&2; return 2; }
-  local -n _out="$_out_name"; _out=()
-  local _emit() {
-    local name="$1" val="$2"
-    local ref; ref="$(_nfo_resolve_ref "$val")"
-    _out+=( --override-input "$name" "$ref" )
-  }
-  _nfo_each_kv NIX_FLAKE_OVERRIDE_INPUTS _emit
-}
-
-# Build --override-flake pairs from $NIX_FLAKE_OVERRIDE_FLAKES
-flake_override_flake_args() {
-  local _out_name="$1"; [[ -z "$_out_name" ]] && { echo "need OUT_ARR" >&2; return 2; }
-  local -n _out="$_out_name"; _out=()
-  local _emit() {
-    local orig="$1" val="$2"
-    local ref; ref="$(_nfo_resolve_ref "$val")"
-    _out+=( --override-flake "$orig" "$ref" )
-  }
-  _nfo_each_kv NIX_FLAKE_OVERRIDE_FLAKES _emit
-}
-
-# Combine both kinds of overrides
-flake_override_args() {
-  local _out_name="$1"; [[ -z "$_out_name" ]] && { echo "need OUT_ARR" >&2; return 2; }
-  local -n _out="$_out_name"; _out=()
-  local A=() B=()
-  flake_override_input_args A
-  flake_override_flake_args B
-  # Append preserving order: inputs then flakes
-  _out+=("${A[@]}")
-  _out+=("${B[@]}")
-}
-
-# Print shell-escaped override args (for `eval` use if desired)
-flake_override_args_quoted() {
-  local ARGS=()
-  flake_override_args ARGS
-  local w
-  for w in "${ARGS[@]}"; do printf '%q ' "$w"; done
-}
-
-# Generate wrapper scripts into .direnv/bin and bake in current overrides
-# Usage: flake_overrides_install_wrappers [flake='.'] [subcmd ...]
-# Default subcmds: develop build run
-flake_overrides_install_wrappers() {
-  local flake="${1:-.}"; shift || true
-  local subcmds=("${@:-develop build run}")
-  local argsq; argsq="$(flake_override_args_quoted)"
-  mkdir -p .direnv/bin
-  for sub in "${subcmds[@]}"; do
-    local name
-    case "$sub" in
-      develop) name=ndev ;;
-      build)   name=nbuild ;;
-      run)     name=nrun ;;
-      *)       name="n$sub" ;;
-    esac
-    cat > ".direnv/bin/$name" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-# Rehydrate precomputed override args, then append any user args.
-eval "set -- $argsq \"\$@\""
-exec nix $sub ${flake@Q} "\$@"
-EOF
-    chmod +x ".direnv/bin/$name"
-  done
-}
-```
+Defines the helpers described above and auto-installs the small CLI tools on source. Prefer the README for usage examples.
 
 ### Example `.env`
 
 ```dotenv
 # Point a flake input to a local checkout and pin nixpkgs via registry override
-NIX_FLAKE_OVERRIDE_INPUTS='mylib=../my-lib;foo/nixpkgs=github:NixOS/nixpkgs/24.05'
+NIX_FLAKE_OVERRIDE_INPUTS='flake-parts=../flake-parts'
 NIX_FLAKE_OVERRIDE_FLAKES='nixpkgs=github:NixOS/nixpkgs/nixos-24.05'
 ```
 
 ### Example `.envrc` (full)
 
 ```bash
-# Load plugin (pin to a commit and hash)
-source_url "https://raw.githubusercontent.com/blocksense-network/direnv-nix-flake-overrides/<COMMIT>/plugin/flake-overrides.bash" \
-           "sha256-PASTE_HASH_HERE="
-
-# Load local overrides
+source_url "https://direnv-flake-overrides.blocksense.network/plugin" \
+           "sha256-T201iQ1RBFKG3lP2bBhaOQssJt5O9G9M3pHtHkLGXWg="
 dotenv_if_exists .env
-
-# Build and splice
-flake_override_args FO_ARGS
-use flake . "${FO_ARGS[@]}"
-
-# Optional wrappers
-flake_overrides_install_wrappers .
-PATH_add .direnv/bin
-
-# Reload on changes
+eval "use flake . $(flake-override-args-quoted)"
 watch_file .env
 ```
 
