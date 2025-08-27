@@ -157,6 +157,32 @@ def test_quoting_edge_cases_in_args_and_wrappers(tmp_path: Path):
     assert "\\$HOME" in content  # dollar sign escaped by %q
 
 
+def test_quoted_printer_roundtrip_exec(tmp_path: Path):
+    # Ensure the quoted printer yields correct argv after eval expansion
+    (tmp_path / "sp dir").mkdir(parents=True, exist_ok=True)
+    env = {
+        "NIX_FLAKE_OVERRIDE_INPUTS": "mylib=./sp dir",
+        # Include multiple '=' and a $HOME to exercise quoting
+        "NIX_FLAKE_OVERRIDE_FLAKES": "foo=git+https://example.com/repo?rev=a=b=c&home=$HOME",
+    }
+    script = (
+        "out() { printf '%s\\n' \"$@\"; }; "
+        "eval \"set -- $(flake-override-args-quoted)\"; out \"$@\""
+    )
+    cp = run_bash(script, cwd=tmp_path, env=env)
+    assert cp.returncode == 0, cp.stderr
+    toks = cp.stdout.strip().splitlines()
+    # Expect the sequence to include the input triplet and the flake triplet
+    assert toks[0] == "--override-input" and toks[1] == "mylib"
+    assert toks[2].startswith("path:/") and "sp dir".replace(" ", "/") not in toks[2]  # still path:/ABS with space
+    # Ensure the flake value retains a=b=c and $HOME literally
+    assert "--override-flake" in toks
+    idx = toks.index("--override-flake")
+    assert toks[idx + 1] == "foo"
+    assert "a=b=c" in toks[idx + 2]
+    assert "$HOME" in toks[idx + 2]
+
+
 def test_nonexistent_dir_passes_through_literal(tmp_path: Path):
     env = {
         "NIX_FLAKE_OVERRIDE_INPUTS": "ghost=./does-not-exist",
@@ -204,6 +230,18 @@ def test_collect_cli_outputs_words(tmp_path: Path):
     words = cp.stdout.strip().splitlines()
     assert words[:2] == ["--override-input", "mylib"]
     assert words[3:5] == ["--override-flake", "override-me"]
+
+
+def test_autoinstall_path_and_gitignore(tmp_path: Path):
+    # After sourcing, helper bin should be on PATH and .gitignore present
+    cp = run_bash(
+        "command -v with-local-flake-overrides; printf '\n'; cat .direnv/local-flake-overrides/.gitignore",
+        cwd=tmp_path,
+    )
+    assert cp.returncode == 0, cp.stderr
+    path_line, _, gitignore = cp.stdout.partition("\n")
+    assert path_line.strip().endswith(".direnv/local-flake-overrides/bin/with-local-flake-overrides"), path_line
+    assert gitignore.strip() == "*\n!.gitignore"
 
 
 def test_leader_supports_custom_subcommands(tmp_path: Path):

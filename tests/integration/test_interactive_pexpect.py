@@ -1,4 +1,5 @@
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,14 @@ PLUGIN = REPO_ROOT / "plugin" / "flake-overrides.bash"
 
 @pytest.mark.timeout(60)
 def test_interactive_direnv_session(tmp_path: Path):
+    if shutil.which("direnv") is None:
+        pytest.skip("direnv not available in PATH")
+    # Basic PTY availability check
+    try:
+        import pty as _pty
+        _pty.openpty()
+    except Exception:
+        pytest.skip("PTYs unavailable in this environment")
     # Prepare a project with .envrc and .env
     (tmp_path / ".env").write_text(
         "NIX_FLAKE_OVERRIDE_INPUTS='mylib=./lib'\n"

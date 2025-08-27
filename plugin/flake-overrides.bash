@@ -228,11 +228,13 @@ _nfo_autoinstall_tools() {
   if [[ ! -f "$base_dir/.gitignore" ]]; then
     printf '*\n!.gitignore\n' > "$base_dir/.gitignore" || true
   fi
-  # Baked CLI printer
-  cat > "$bindir/flake-override-args-quoted" <<EOF
+  # Baked CLI printer with args injected safely
+  cat > "$bindir/flake-override-args-quoted" <<'EOF'
 #!/usr/bin/env bash
+argsq='__ARGSQ_PLACEHOLDER__'
 printf '%s' "$argsq"
 EOF
+  sed -i.bak "s|__ARGSQ_PLACEHOLDER__|$(printf '%s' "$argsq" | sed 's/[\&/]/\\&/g')|" "$bindir/flake-override-args-quoted" && rm -f "$bindir/flake-override-args-quoted.bak"
   chmod +x "$bindir/flake-override-args-quoted"
   # Generic leader wrapper around nix subcommands (array-safe)
   cat > "$bindir/with-local-flake-overrides" <<'EOF'

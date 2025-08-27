@@ -12,8 +12,12 @@ Use it to point flake inputs (and/or registry refs) to local paths, specific com
 ## Features
 
 * **Two kinds of overrides**: inputs (`--override-input`) and registry refs (`--override-flake`).
-* **Clean composition**: provides a function that builds a **bash array** of args you can splice into `use flake` (from `nix-direnv`).
-* **Wrapper scripts**: optional `ndev`, `nbuild`, `nrun` generated into `.direnv/bin/` so you can keep using short commands in your shell.
+* **Clean composition**: provides a function that builds a **bash array** of args you can splice into `use flake` (from `nix-direnv`), plus CLI helpers for inline usage.
+* **Auto tools on source**: installs tiny helpers into `.direnv/local-flake-overrides/bin` and adds it to `PATH`:
+  * `flake-override-args-quoted` → prints safely quoted flags for inline eval
+  * `collect-flake-override-args` → prints one arg per line for easy `mapfile`
+  * `with-local-flake-overrides` → leader for ad‑hoc `nix <subcmd>` usage
+* **Legacy wrappers (optional)**: `local-nix-develop`, `local-nix-build`, `local-nix-run` can still be generated if desired.
 * **Path smarts**: directory values are resolved to absolute and coerced to `path:/ABS`.
 * **Safe quoting**: printer uses `printf %q` so baked scripts are robust.
 * **Zero-commit setup**: load via `source_url` pinned by hash and cached locally.
@@ -35,28 +39,23 @@ Add this to your project’s `.envrc` (pin to a commit and hash):
 ```bash
 # .envrc
 # 1) Load the plugin (pinned)
-source_url "https://raw.githubusercontent.com/blocksense-network/direnv-nix-flake-overrides/<COMMIT>/plugin/flake-overrides.bash" \
-           "sha256-PASTE_HASH_HERE="
+source_url "https://direnv-flake-overrides.blocksense.network/plugin" \
+           "sha256-T201iQ1RBFKG3lP2bBhaOQssJt5O9G9M3pHtHkLGXWg="
 
 # 2) Load variables (optional)
 dotenv_if_exists .env
 
-# 3) Build args and splice into nix-direnv’s use flake
-flake_override_args FO_ARGS
-use flake . "${FO_ARGS[@]}"
+# 3) Splice overrides into nix-direnv in one line
+eval "use flake . $(flake-override-args-quoted)"
 
-# 4) (Optional) install wrapper scripts that carry the same args
-flake_overrides_install_wrappers .
-PATH_add .direnv/bin
-
-# 5) Recompute when .env changes
+# 4) Recompute when .env changes
 watch_file .env
 ```
 
 > Obtain the `sha256-…` with:
 >
 > ```bash
-> direnv fetchurl "https://raw.githubusercontent.com/blocksense-network/direnv-nix-flake-overrides/<COMMIT>/plugin/flake-overrides.bash"
+> direnv fetchurl "https://direnv-flake-overrides.blocksense.network/plugin"
 > ```
 
 ---
@@ -74,14 +73,13 @@ Semicolon-delimited `name=ref` pairs mapping **input paths** to **flake refs**. 
 
 ```dotenv
 # .env
-NIX_FLAKE_OVERRIDE_INPUTS='mylib=../my-lib;foo/nixpkgs=github:NixOS/nixpkgs/nixos-24.05'
+NIX_FLAKE_OVERRIDE_INPUTS='flake-parts=../flake-parts'
 ```
 
 **Effect** (conceptually):
 
 ```
---override-input mylib path:/ABS/PATH/TO/my-lib \
---override-input foo/nixpkgs github:NixOS/nixpkgs/nixos-24.05
+--override-input flake-parts path:/ABS/PATH/TO/flake-parts
 ```
 
 ### 2) `NIX_FLAKE_OVERRIDE_FLAKES`
@@ -111,30 +109,24 @@ NIX_FLAKE_OVERRIDE_FLAKES='nixpkgs=github:NixOS/nixpkgs/nixos-24.05;myfork=githu
 ### Splice into `use flake`
 
 ```bash
-flake_override_args FO_ARGS
+eval "use flake . $(flake-override-args-quoted)"
+```
+
+### Leader script (ad‑hoc)
+
+```bash
+with-local-flake-overrides nix build .#mypkg --rebuild
+with-local-flake-overrides nix develop .
+with-local-flake-overrides nix run .#tool -- --flag
+```
+
+### Build an array (no eval)
+
+Collect into a Bash array without `eval` and splice safely:
+
+```bash
+mapfile -t FO_ARGS < <(collect-flake-override-args)
 use flake . "${FO_ARGS[@]}"
-```
-
-### Wrapper scripts
-
-```bash
-flake_overrides_install_wrappers .
-PATH_add .direnv/bin
-# now use:
-ndev        # -> nix develop . <overrides…>
-nbuild      # -> nix build   . <overrides…>
-nrun        # -> nix run     . <overrides…>
-# pass extra flags:
-nbuild .#mypkg --rebuild
-```
-
-### Inline (alternative)
-
-If you prefer a single call site and don’t mind `eval`, there’s a safe printer:
-
-```bash
-# Inside .envrc
-eval "use flake . $(flake_override_args_quoted)"
 ```
 
 ---
@@ -143,7 +135,7 @@ eval "use flake . $(flake_override_args_quoted)"
 
 * The plugin parses the env vars, resolves directory values to absolute paths, and constructs the appropriate `--override-input` / `--override-flake` flag pairs.
 * `flake_override_args OUT_ARR` fills a **bash array** so argument boundaries are preserved without quoting bugs.
-* `flake_overrides_install_wrappers` bakes the computed flags into `.direnv/bin/{ndev,nbuild,nrun}` as tiny scripts so they persist beyond the `.envrc` subshell.
+* Auto tools are generated on source: `flake-override-args-quoted`, `collect-flake-override-args`, and `with-local-flake-overrides`.
 
 ---
 
@@ -197,16 +189,21 @@ MIT © Blocksense Network
 #   - NIX_FLAKE_OVERRIDE_INPUTS  => multiple --override-input <input> <ref>
 #   - NIX_FLAKE_OVERRIDE_FLAKES  => multiple --override-flake <orig> <resolved>
 #
-# Primary API (recommended):
-#   flake_override_args OUT_ARR
-#     -> fills bash array OUT_ARR with all flags (inputs + flakes)
+# Primary usage:
+#   - Inline: eval "use flake . $(flake-override-args-quoted)"
+#   - Array:  mapfile -t ARGS < <(collect-flake-override-args); use flake . "${ARGS[@]}"
+#   - Leader: with-local-flake-overrides nix <subcmd> [...]
 #
-# Secondary APIs:
+# Public functions (programmatic usage):
+#   flake_override_args OUT_ARR         # build all flags into OUT_ARR (inputs + flakes)
 #   flake_override_input_args OUT_ARR   # inputs only
 #   flake_override_flake_args OUT_ARR   # registry overrides only
-#   flake_override_args_quoted          # prints flags shell-escaped for eval
-#   flake_overrides_install_wrappers [flake='.']
-#     -> emits .direnv/bin/{ndev,nbuild,nrun} with baked flags
+#   flake_override_args_quoted          # prints flags shell-escaped (for eval)
+#
+# Helpers (auto-generated on source):
+#   flake-override-args-quoted          # CLI printer for inline use
+#   collect-flake-override-args         # CLI printer, one word per line
+#   with-local-flake-overrides          # leader for nix subcommands
 #
 # Requirements: bash >= 4.4, direnv >= 2.30, nix >= 2.18
 
@@ -393,4 +390,3 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
-
