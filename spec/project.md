@@ -12,6 +12,7 @@ Use it to point flake inputs (and/or registry refs) to local paths, specific com
 ## Features
 
 * **Two kinds of overrides**: inputs (`--override-input`) and registry refs (`--override-flake`).
+* **Sibling auto-detection**: override flake inputs from same-named local checkouts — a curated list (`NIX_FLAKE_OVERRIDE_SIBLINGS`) or full auto-probe of every input (`NIX_FLAKE_OVERRIDE_AUTO`) — silently skipping any sibling that isn't checked out. Resolved under `NIX_FLAKE_OVERRIDE_SIBLINGS_ROOT` (default: the project's parent dir). Precedence: explicit inputs > curated siblings > auto.
 * **Clean composition**: provides a function that builds a **bash array** of args you can splice into `use flake` (from `nix-direnv`), plus CLI helpers for inline usage.
 * **Auto tools on source**: installs tiny helpers into `.direnv/local-flake-overrides/bin` and adds it to `PATH`:
   * `flake-override-args-quoted` → prints safely quoted flags for inline eval

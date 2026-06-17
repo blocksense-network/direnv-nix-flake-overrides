@@ -89,6 +89,41 @@ Effect:
 
 Tip: Use inputs for dependencies declared inside your `flake.nix`. Use flake overrides for registry lookups (e.g., CLI refs).
 
+### 3) Auto-override flake inputs from local sibling checkouts
+
+When you keep dependencies as sibling checkouts next to your project (the usual side-by-side / monorepo layout), you rarely want to hand-write a path for each one. Two variables make this automatic. Both resolve directories under the **siblings root** — default: the parent of the project; override with `NIX_FLAKE_OVERRIDE_SIBLINGS_ROOT` — and **silently skip** any input whose sibling isn't checked out (so the same `.env` works whether or not you've cloned a given dependency).
+
+#### Curated list — `NIX_FLAKE_OVERRIDE_SIBLINGS`
+
+A `|`-delimited list of inputs to override with a local checkout *iff* it is present. Each entry is `<name>` (input name == sibling dir name) or `<input>=<dir>` when they differ.
+
+```dotenv
+# .env — override these inputs with ../<sibling> when the dir exists
+NIX_FLAKE_OVERRIDE_SIBLINGS='ct-test-src=ct-test|runquota-src=runquota'
+```
+
+If `../ct-test` and `../runquota` exist, this expands to:
+
+```
+--override-input ct-test-src path:/ABS/ct-test \
+--override-input runquota-src path:/ABS/runquota
+```
+
+#### Full auto — `NIX_FLAKE_OVERRIDE_AUTO`
+
+Opt in (`=1`) and **every** flake input is probed for a same-named sibling — no list to maintain. Inputs without a matching sibling are left on their pinned ref.
+
+```dotenv
+# .env
+NIX_FLAKE_OVERRIDE_AUTO=1
+# Optional: let an input like `foo-src` match a sibling named `foo`
+NIX_FLAKE_OVERRIDE_AUTO_STRIP_SUFFIXES='-src'
+```
+
+Reading the input names uses `nix flake metadata --json`, so `nix` and `jq` must be available; if either is missing, the auto pass is skipped with a warning (your explicit overrides still apply).
+
+**Precedence** — each input is overridden at most once: explicit `NIX_FLAKE_OVERRIDE_INPUTS` wins over `NIX_FLAKE_OVERRIDE_SIBLINGS`, which wins over `NIX_FLAKE_OVERRIDE_AUTO`. So you can enable auto globally and still pin a single input by hand.
+
 ---
 
 ## Usage Patterns

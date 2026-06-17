@@ -54,11 +54,13 @@ def test_direnv_exec_loads_plugin_and_emits_args(tmp_path: Path):
     bash_bin = os.environ.get("BASH_BINARY", "bash")
     cp_args = run([
         "direnv", "exec", str(project), "nix", "develop", "-c", bash_bin, "-lc",
-        f"cd '{project}'; log_status(){{ :; }}; source '{PLUGIN}'; export NIX_FLAKE_OVERRIDE_INPUTS=\"mylib=./lib|foo/nixpkgs=github:NixOS/nixpkgs/nixos-24.05\"; export NIX_FLAKE_OVERRIDE_FLAKES=\"nixpkgs=github:NixOS/nixpkgs/nixos-24.05\"; flake_override_args_quoted",
+        f"cd '{project}'; log_status(){{ :; }}; source '{PLUGIN}'; export NIX_FLAKE_OVERRIDE_INPUTS=\"mylib=./lib|foo/nixpkgs=github:NixOS/nixpkgs/nixos-24.05\"; export NIX_FLAKE_OVERRIDE_FLAKES=\"nixpkgs=github:NixOS/nixpkgs/nixos-24.05\"; eval \"set -- $(flake_override_args_quoted)\"; printf '%s\\n' \"$@\"",
     ])
     if cp_args.returncode != 0:
         pytest.skip(f"direnv exec nix develop not usable here: {cp_args.stderr}")
-    out = cp_args.stdout.strip().split()
+    # flake_override_args_quoted prints shell-quoted args; eval them back to argv
+    # (one token per line) so values with spaces stay intact.
+    out = cp_args.stdout.strip().splitlines()
     assert out, f"no output from flake_override_args_quoted; stderr: {cp_args.stderr}"
     assert out[0] == "--override-input" and out[1] == "mylib"
     # Accept either coerced path:/ABS or raw relative path depending on shell cwd

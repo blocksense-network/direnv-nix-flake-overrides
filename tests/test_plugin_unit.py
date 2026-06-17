@@ -320,3 +320,134 @@ def test_empty_envs_no_error():
     cp = run_bash("flake_override_args_quoted", env=env)
     assert cp.returncode == 0, cp.stderr
     assert cp.stdout.strip() == ""
+
+
+# --------------------------------------------------------------------------
+# Sibling auto-detection: NIX_FLAKE_OVERRIDE_SIBLINGS and NIX_FLAKE_OVERRIDE_AUTO
+# --------------------------------------------------------------------------
+
+def _argv_from_func(cwd: Path, env: dict, stub_inputs=None):
+    """Run flake_override_args_quoted (re-evaluated at call time) and return the
+    resulting argv tokens. If stub_inputs is given, _nfo_flake_input_names is
+    replaced so the auto-override probe is deterministic without a real flake."""
+    prelude = ""
+    if stub_inputs is not None:
+        printed = " ".join(f"'{n}'" for n in stub_inputs)
+        prelude = f"_nfo_flake_input_names() {{ printf '%s\\n' {printed}; }}; "
+    script = prelude + 'eval "set -- $(flake_override_args_quoted)"; printf \'%s\\n\' "$@"'
+    cp = run_bash(script, cwd=cwd, env=env)
+    assert cp.returncode == 0, cp.stderr
+    return [t for t in cp.stdout.strip().splitlines() if t != ""]
+
+
+def _make_sibling(root: Path, name: str, with_flake: bool = True) -> Path:
+    d = root / name
+    d.mkdir(parents=True, exist_ok=True)
+    if with_flake:
+        (d / "flake.nix").write_text("{ outputs = _: {}; }\n")
+    return d
+
+
+def test_siblings_present_emits_override(tmp_path: Path):
+    root = tmp_path / "siblings"
+    _make_sibling(root, "mylib")
+    env = {
+        "NIX_FLAKE_OVERRIDE_SIBLINGS_ROOT": str(root),
+        "NIX_FLAKE_OVERRIDE_SIBLINGS": "mylib",
+    }
+    toks = _argv_from_func(tmp_path, env)
+    assert toks[:2] == ["--override-input", "mylib"]
+    assert toks[2].startswith("path:/") and toks[2].endswith("/mylib")
+
+
+def test_siblings_absent_skips(tmp_path: Path):
+    root = tmp_path / "siblings"
+    root.mkdir()
+    env = {
+        "NIX_FLAKE_OVERRIDE_SIBLINGS_ROOT": str(root),
+        "NIX_FLAKE_OVERRIDE_SIBLINGS": "mylib|other",
+    }
+    assert _argv_from_func(tmp_path, env) == []
+
+
+def test_siblings_explicit_input_to_dir_mapping(tmp_path: Path):
+    root = tmp_path / "siblings"
+    _make_sibling(root, "the-dir")
+    env = {
+        "NIX_FLAKE_OVERRIDE_SIBLINGS_ROOT": str(root),
+        "NIX_FLAKE_OVERRIDE_SIBLINGS": "the-input=the-dir",
+    }
+    toks = _argv_from_func(tmp_path, env)
+    assert toks[:2] == ["--override-input", "the-input"]
+    assert toks[2].endswith("/the-dir")
+
+
+def test_siblings_without_flake_nix_skipped(tmp_path: Path):
+    root = tmp_path / "siblings"
+    _make_sibling(root, "mylib", with_flake=False)
+    env = {
+        "NIX_FLAKE_OVERRIDE_SIBLINGS_ROOT": str(root),
+        "NIX_FLAKE_OVERRIDE_SIBLINGS": "mylib",
+    }
+    assert _argv_from_func(tmp_path, env) == []
+
+
+def test_explicit_input_wins_over_sibling(tmp_path: Path):
+    root = tmp_path / "siblings"
+    _make_sibling(root, "mylib")
+    env = {
+        "NIX_FLAKE_OVERRIDE_SIBLINGS_ROOT": str(root),
+        "NIX_FLAKE_OVERRIDE_INPUTS": "mylib=github:owner/repo",
+        "NIX_FLAKE_OVERRIDE_SIBLINGS": "mylib",
+    }
+    # mylib overridden exactly once, by the explicit input (not the sibling).
+    assert _argv_from_func(tmp_path, env) == ["--override-input", "mylib", "github:owner/repo"]
+
+
+def test_auto_override_same_name(tmp_path: Path):
+    root = tmp_path / "siblings"
+    _make_sibling(root, "foo")
+    # `bar` has no sibling — must be skipped
+    env = {
+        "NIX_FLAKE_OVERRIDE_SIBLINGS_ROOT": str(root),
+        "NIX_FLAKE_OVERRIDE_AUTO": "1",
+    }
+    toks = _argv_from_func(tmp_path, env, stub_inputs=["foo", "bar"])
+    assert toks[:2] == ["--override-input", "foo"]
+    assert toks[2].endswith("/foo")
+    assert "bar" not in toks
+
+
+def test_auto_override_strip_suffix(tmp_path: Path):
+    root = tmp_path / "siblings"
+    _make_sibling(root, "runquota")
+    env = {
+        "NIX_FLAKE_OVERRIDE_SIBLINGS_ROOT": str(root),
+        "NIX_FLAKE_OVERRIDE_AUTO": "1",
+        "NIX_FLAKE_OVERRIDE_AUTO_STRIP_SUFFIXES": "-src",
+    }
+    toks = _argv_from_func(tmp_path, env, stub_inputs=["runquota-src"])
+    # input name keeps its `-src`; the sibling dir is the stripped `runquota`.
+    assert toks[:2] == ["--override-input", "runquota-src"]
+    assert toks[2].endswith("/runquota")
+
+
+def test_auto_override_disabled_by_default(tmp_path: Path):
+    root = tmp_path / "siblings"
+    _make_sibling(root, "foo")
+    env = {"NIX_FLAKE_OVERRIDE_SIBLINGS_ROOT": str(root)}  # AUTO unset
+    assert _argv_from_func(tmp_path, env, stub_inputs=["foo"]) == []
+
+
+def test_auto_override_does_not_duplicate_explicit(tmp_path: Path):
+    root = tmp_path / "siblings"
+    _make_sibling(root, "foo")
+    env = {
+        "NIX_FLAKE_OVERRIDE_SIBLINGS_ROOT": str(root),
+        "NIX_FLAKE_OVERRIDE_AUTO": "1",
+        "NIX_FLAKE_OVERRIDE_INPUTS": "foo=github:owner/repo",
+    }
+    # foo is explicit AND a present sibling under auto — emitted once (explicit).
+    assert _argv_from_func(tmp_path, env, stub_inputs=["foo"]) == [
+        "--override-input", "foo", "github:owner/repo",
+    ]

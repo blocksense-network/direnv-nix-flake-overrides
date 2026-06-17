@@ -22,10 +22,24 @@
 # Requirements: direnv >= 2.30, nix >= 2.18
 # Bash compatibility: Bash >= 3.2
 
+# The `_nfo_emit_*` helpers are invoked indirectly, by name, through the
+# `_nfo_each_kv` / `_nfo_each_sibling` / `_nfo_auto_override` dispatchers, so
+# ShellCheck's "never invoked" heuristic does not see the call sites.
+# shellcheck disable=SC2329
+
 set -o pipefail
 
 # --- Internals --------------------------------------------------------------
 _direnv_nfo_log() { log_status "flake-overrides: $*"; }
+
+# direnv exports DIRENV_DIR as '-' followed by the absolute project path; strip
+# that marker to get a usable directory. Falls back to $PWD outside direnv
+# (e.g. when the plugin is sourced directly, as in the tests).
+_nfo_project_dir() {
+  local _d="${DIRENV_DIR:-}"
+  _d="${_d#-}"
+  if [[ -n "$_d" ]]; then printf '%s' "$_d"; else printf '%s' "$PWD"; fi
+}
 
 # Convert a delimited KV list VAR (e.g., name=val|foo=bar) into
 # pairs via callback: _nfo_each_kv VAR_NAME callback
@@ -68,6 +82,7 @@ _nfo_each_kv() {
 _nfo_resolve_ref() {
   local _val="$1"
   local _base="${DIRENV_DIR:-}"
+  _base="${_base#-}"  # direnv prefixes DIRENV_DIR with '-'
   if [[ -d "$_val" ]]; then
     local _abs
     if _abs="$(cd "$_val" 2>/dev/null && pwd -P)"; then
@@ -90,18 +105,156 @@ _nfo_resolve_ref() {
   printf '%s' "$_val"
 }
 
-# ---
+# --- Sibling auto-detection -------------------------------------------------
+# Two convenience layers on top of the explicit NIX_FLAKE_OVERRIDE_INPUTS:
+#   - NIX_FLAKE_OVERRIDE_SIBLINGS: a curated list of inputs to override with a
+#     local checkout *iff* that checkout is present.
+#   - NIX_FLAKE_OVERRIDE_AUTO:     probe every flake input for a same-named
+#     sibling, so no list needs to be maintained.
+# Both resolve sibling directories under NIX_FLAKE_OVERRIDE_SIBLINGS_ROOT
+# (default: the parent of the project directory — the usual side-by-side
+# checkout layout) and silently skip inputs whose sibling is absent.
 
-# ---
+# Truthy test for opt-in flags.
+_nfo_is_true() {
+  case "${1:-}" in
+    1 | true | TRUE | yes | YES | on | ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
-# Print shell-escaped override args (for `eval` use if desired)
+# Root directory under which local sibling checkouts live.
+_nfo_siblings_root() {
+  local _root="${NIX_FLAKE_OVERRIDE_SIBLINGS_ROOT:-}"
+  if [[ -z "$_root" ]]; then
+    _root="$(_nfo_project_dir)/.."
+  fi
+  ( cd "$_root" 2>/dev/null && pwd -P ) || printf '%s' "$_root"
+}
+
+# Iterate NIX_FLAKE_OVERRIDE_SIBLINGS entries as `callback <input> <dir>`.
+# Each entry is `<name>` (input name == sibling dir name) or `<input>=<dir>`.
+_nfo_each_sibling() {
+  local _cb="$1" _raw="" _had_u=0
+  case $- in *u*) _had_u=1; set +u ;; esac
+  _raw="${NIX_FLAKE_OVERRIDE_SIBLINGS:-}"
+  (( _had_u )) && set -u
+  [[ -z "$_raw" ]] && return 0
+  local _delim='|'
+  case "$_raw" in *'^'*) _delim='^' ;; esac
+  local IFS="$_delim"
+  local _entries=()
+  read -r -a _entries <<< "$_raw"
+  local _entry _input _dir
+  for _entry in "${_entries[@]}"; do
+    [[ -z "$_entry" ]] && continue
+    if [[ "$_entry" == *=* ]]; then
+      _input="${_entry%%=*}"; _dir="${_entry#*=}"
+    else
+      _input="$_entry"; _dir="$_entry"
+    fi
+    if [[ -z "$_input" || -z "$_dir" ]]; then
+      _direnv_nfo_log "ignoring malformed sibling entry: '$_entry'"
+      continue
+    fi
+    "$_cb" "$_input" "$_dir"
+  done
+}
+
+# Print the flake input names declared in the current project's flake, one per
+# line, from the lock via `nix flake metadata --json`. Requires nix and jq;
+# prints nothing (and warns) if either is missing or the flake can't be read.
+# Overridable in tests by redefining this function.
+_nfo_flake_input_names() {
+  if ! command -v nix >/dev/null 2>&1; then
+    _direnv_nfo_log "auto-override: 'nix' not found; skipping"; return 1
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    _direnv_nfo_log "auto-override: 'jq' not found; skipping"; return 1
+  fi
+  local _dir; _dir="$(_nfo_project_dir)"
+  nix flake metadata "$_dir" --json --no-write-lock-file 2>/dev/null \
+    | jq -r '.locks as $l | ($l.nodes[$l.root].inputs // {}) | keys[]' 2>/dev/null
+}
+
+# Full auto-override: for every flake input, look for a same-named sibling and,
+# if present, emit an override via `callback <input> <dir>`. The optional
+# NIX_FLAKE_OVERRIDE_AUTO_STRIP_SUFFIXES (comma/space list, e.g. "-src,-flake")
+# lets an input like `foo-src` match a sibling named `foo`.
+_nfo_auto_override() {
+  local _cb="$1"
+  local _names; _names="$(_nfo_flake_input_names)" || return 0
+  [[ -z "$_names" ]] && return 0
+  local _root; _root="$(_nfo_siblings_root)"
+  local _sfxs="${NIX_FLAKE_OVERRIDE_AUTO_STRIP_SUFFIXES:-}"
+  local _name _cands _try _s _oldifs
+  while IFS= read -r _name; do
+    [[ -z "$_name" ]] && continue
+    _cands="$_name"
+    if [[ -n "$_sfxs" ]]; then
+      _oldifs="$IFS"; IFS=', '
+      for _s in $_sfxs; do
+        [[ -n "$_s" && "$_name" == *"$_s" ]] && _cands="$_cands ${_name%"$_s"}"
+      done
+      IFS="$_oldifs"
+    fi
+    for _try in $_cands; do
+      if [[ -d "$_root/$_try" ]]; then
+        "$_cb" "$_name" "$_try"
+        break
+      fi
+    done
+  done <<< "$_names"
+}
+
+# Print shell-escaped override args (for `eval` use if desired). Emits, in
+# precedence order — explicit wins; each input is overridden at most once:
+#   1) NIX_FLAKE_OVERRIDE_INPUTS   (explicit --override-input)
+#   2) NIX_FLAKE_OVERRIDE_SIBLINGS (curated list; present siblings only)
+#   3) NIX_FLAKE_OVERRIDE_AUTO     (every flake input with a same-named sibling)
+#   4) NIX_FLAKE_OVERRIDE_FLAKES   (--override-flake)
 flake_override_args_quoted() {
   # Print shell-escaped override args without relying on nameref arrays
   _nfo_print_word() { local s="$1"; s=${s//\'/\'\\\'\'}; printf "'%s' " "$s"; }
   _nfo_print_pair() { _nfo_print_word "$1"; _nfo_print_word "$2"; _nfo_print_word "$3"; }
-  _nfo_emit_in() { local name="$1" val="$2"; local ref; ref="$(_nfo_resolve_ref "$val")"; _nfo_print_pair --override-input "$name" "$ref"; }
+
+  # Inputs already overridden by a higher-precedence rule, so a duplicate
+  # --override-input is never emitted for the same input. Space-delimited
+  # (input names contain no spaces); works on Bash 3.2 (no associative arrays).
+  local _nfo_claimed=" "
+  _nfo_claim() { _nfo_claimed="${_nfo_claimed}$1 "; }
+  _nfo_is_claimed() { [[ "$_nfo_claimed" == *" $1 "* ]]; }
+
+  _nfo_emit_in() {
+    local name="$1" val="$2"
+    _nfo_is_claimed "$name" && return 0
+    local ref; ref="$(_nfo_resolve_ref "$val")"
+    _nfo_print_pair --override-input "$name" "$ref"
+    _nfo_claim "$name"
+  }
+  # Override <input> with <root>/<dir>, but only if that directory exists.
+  # Shared by the curated sibling list and the full auto-override.
+  _nfo_emit_sibling() {
+    local input="$1" dir="$2"
+    _nfo_is_claimed "$input" && return 0
+    local root; root="$(_nfo_siblings_root)"
+    local cand="$root/$dir" abs
+    [[ -d "$cand" ]] || return 0
+    abs="$(cd "$cand" 2>/dev/null && pwd -P)" || return 0
+    if [[ ! -f "$abs/flake.nix" ]]; then
+      _direnv_nfo_log "warn sibling '$abs' has no flake.nix; skipping"
+      return 0
+    fi
+    _nfo_print_pair --override-input "$input" "path:$abs"
+    _nfo_claim "$input"
+  }
   _nfo_emit_fk() { local orig="$1" val="$2"; local ref; ref="$(_nfo_resolve_ref "$val")"; _nfo_print_pair --override-flake "$orig" "$ref"; }
+
   _nfo_each_kv NIX_FLAKE_OVERRIDE_INPUTS _nfo_emit_in
+  _nfo_each_sibling _nfo_emit_sibling
+  if _nfo_is_true "${NIX_FLAKE_OVERRIDE_AUTO:-}"; then
+    _nfo_auto_override _nfo_emit_sibling
+  fi
   _nfo_each_kv NIX_FLAKE_OVERRIDE_FLAKES _nfo_emit_fk
 }
 
