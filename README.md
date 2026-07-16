@@ -17,7 +17,7 @@ Add this to your project’s `.envrc`:
 # See https://direnv-flake-overrides.blocksense.network
 # Allows flake inputs to be easily overridden from your local .env file
 source_url "https://direnv-flake-overrides.blocksense.network/plugin" \
-           "sha256-bqkWqI8UKTvRy8L26qLnT9Is6moil8SIx34ZZoPeR4E="
+           "sha256-BTxlsheP/7/FQw9IBPGFc6zYTl5S2qdAAt3EUqfkbjI="
 
 # Optional: load overrides from .env
 dotenv_if_exists .env
@@ -169,3 +169,38 @@ Reading the input names uses `nix flake metadata --json`, so `nix` and `jq` must
   use flake . "${FO_ARGS[@]}"
   ```
 
+
+---
+
+## Deployment
+
+`https://direnv-flake-overrides.blocksense.network/plugin` is a Cloudflare
+redirect to this repo's **`stable`** branch, served via GitHub raw:
+
+```
+https://raw.githubusercontent.com/blocksense-network/direnv-nix-flake-overrides/refs/heads/stable/plugin/flake-overrides.bash
+```
+
+The redirect follows `stable`, so it is configured **once** and never needs to
+change again. Consumers pin the integrity hash of the current `stable` version
+(see [Quick Start](#quick-start)).
+
+### Cutting a release
+
+1. Land the change on `main`.
+2. Fast-forward `stable` to the release commit:
+
+   ```bash
+   git push origin main:stable
+   ```
+
+3. Recompute the hash and update it in the Quick Start snippet above — and in
+   any consuming `.envrc` (e.g. the `blocksense` monorepo):
+
+   ```bash
+   direnv fetchurl "https://direnv-flake-overrides.blocksense.network/plugin"
+   ```
+
+Because `source_url` verifies the pinned hash against the downloaded bytes,
+steps 2 and 3 must land together: moving `stable` without updating the hash
+will break fresh checkouts (cached consumers are unaffected until they refetch).
