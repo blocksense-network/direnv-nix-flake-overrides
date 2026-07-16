@@ -17,7 +17,7 @@ Add this to your project’s `.envrc`:
 # See https://direnv-flake-overrides.blocksense.network
 # Allows flake inputs to be easily overridden from your local .env file
 source_url "https://direnv-flake-overrides.blocksense.network/plugin" \
-           "sha256-bqkWqI8UKTvRy8L26qLnT9Is6moil8SIx34ZZoPeR4E="
+           "sha256-BTxlsheP/7/FQw9IBPGFc6zYTl5S2qdAAt3EUqfkbjI="
 
 # Optional: load overrides from .env
 dotenv_if_exists .env

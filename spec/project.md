@@ -40,7 +40,7 @@ Add this to your project’s `.envrc` (pin to a commit and hash):
 # .envrc
 # 1) Load the plugin (pinned)
 source_url "https://direnv-flake-overrides.blocksense.network/plugin" \
-           "sha256-T201iQ1RBFKG3lP2bBhaOQssJt5O9G9M3pHtHkLGXWg="
+           "sha256-BTxlsheP/7/FQw9IBPGFc6zYTl5S2qdAAt3EUqfkbjI="
 
 # 2) Load variables (optional)
 dotenv_if_exists .env
@@ -195,7 +195,7 @@ NIX_FLAKE_OVERRIDE_FLAKES='nixpkgs=github:NixOS/nixpkgs/nixos-24.05'
 
 ```bash
 source_url "https://direnv-flake-overrides.blocksense.network/plugin" \
-           "sha256-T201iQ1RBFKG3lP2bBhaOQssJt5O9G9M3pHtHkLGXWg="
+           "sha256-BTxlsheP/7/FQw9IBPGFc6zYTl5S2qdAAt3EUqfkbjI="
 dotenv_if_exists .env
 eval "use flake . $(flake-override-args-quoted)"
 watch_file .env
