@@ -213,6 +213,13 @@ _nfo_auto_override() {
 #   2) NIX_FLAKE_OVERRIDE_SIBLINGS (curated list; present siblings only)
 #   3) NIX_FLAKE_OVERRIDE_AUTO     (every flake input with a same-named sibling)
 #   4) NIX_FLAKE_OVERRIDE_FLAKES   (--override-flake)
+#
+# The nested `_nfo_*` helpers below are invoked indirectly — by name, as
+# callbacks passed to _nfo_each_kv / _nfo_each_sibling / _nfo_auto_override —
+# which shellcheck's reachability analysis can't follow, so it reports every
+# helper body as unreachable (SC2317). They are all reached; suppress the
+# false positive for this function.
+# shellcheck disable=SC2317
 flake_override_args_quoted() {
   # Print shell-escaped override args without relying on nameref arrays
   _nfo_print_word() { local s="$1"; s=${s//\'/\'\\\'\'}; printf "'%s' " "$s"; }
