@@ -1,4 +1,5 @@
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -14,7 +15,14 @@ def run_bash(script: str, cwd: Path | None = None, env: dict | None = None) -> s
     if env:
         merged_env.update(env)
     bash_bin = merged_env.get("BASH_BINARY", "bash")
-    bash_script = f"set -euo pipefail\nlog_status(){{ :; }}\nsource '{PLUGIN}'\n{script}\n"
+    # `bash -lc` sources login profiles, and on some hosts (e.g. CI with Nix
+    # installed) those prepend the real `nix` to PATH — which would shadow the
+    # per-test `nix` stubs. Re-assert the caller's PATH as the first thing the
+    # script does so the intended PATH ordering wins regardless of the profile.
+    bash_script = (
+        f"export PATH={shlex.quote(merged_env['PATH'])}\n"
+        f"set -euo pipefail\nlog_status(){{ :; }}\nsource '{PLUGIN}'\n{script}\n"
+    )
     return subprocess.run(
         [bash_bin, "-lc", bash_script],
         cwd=str(cwd) if cwd else None,
