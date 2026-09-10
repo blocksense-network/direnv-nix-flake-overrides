@@ -17,7 +17,7 @@ Add this to your project’s `.envrc`:
 # See https://direnv-flake-overrides.blocksense.network
 # Allows flake inputs to be easily overridden from your local .env file
 source_url "https://direnv-flake-overrides.blocksense.network/plugin" \
-           "sha256-BTxlsheP/7/FQw9IBPGFc6zYTl5S2qdAAt3EUqfkbjI="
+           "sha256-5QvPeBdeVicVpqfYzmbCwy26IzY14sMk5cb4GvjCcwI="
 
 # Optional: load overrides from .env
 dotenv_if_exists .env
@@ -33,6 +33,26 @@ watch_file .env
 >
 > ```bash
 > direnv fetchurl "https://direnv-flake-overrides.blocksense.network/plugin"
+> ```
+>
+> The hash above is that of `plugin/flake-overrides.bash` **at this commit**;
+> it is only live once this revision has been published to that URL. Because
+> `source_url` resolves purely by content hash, a stale pin is not an older
+> version of the same program — it is a *different* program, and one that
+> lacks a feature you configure will not complain, it will simply emit no
+> overrides. Re-run `direnv fetchurl` after every publish and update
+> consumers, or point them at a sibling checkout:
+>
+> ```bash
+> # Prefer a sibling checkout of the plugin (always current); else the pin.
+> _fo_local="../direnv-nix-flake-overrides/plugin/flake-overrides.bash"
+> if [[ -f "$_fo_local" ]]; then
+>   watch_file "$_fo_local"; source "$_fo_local"
+> else
+>   source_url "https://direnv-flake-overrides.blocksense.network/plugin" \
+>              "sha256-5QvPeBdeVicVpqfYzmbCwy26IzY14sMk5cb4GvjCcwI="
+> fi
+> unset _fo_local
 > ```
 
 ---
