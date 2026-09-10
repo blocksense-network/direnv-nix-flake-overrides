@@ -32,6 +32,13 @@ set -o pipefail
 # --- Internals --------------------------------------------------------------
 _direnv_nfo_log() { log_status "flake-overrides: $*"; }
 
+# Unconditional notice on **stderr**. Never stdout: stdout is spliced verbatim
+# into `use flake …`, so a single stray word there corrupts the command line.
+# Deliberately not routed through `log_status`, which direnv silences when
+# DIRENV_LOG_FORMAT is empty — these notices describe files that will be
+# missing from the build and must not be swallowed.
+_nfo_notice() { printf 'flake-overrides: %s\n' "$1" >&2; }
+
 # direnv exports DIRENV_DIR as '-' followed by the absolute project path; strip
 # that marker to get a usable directory. Falls back to $PWD outside direnv
 # (e.g. when the plugin is sourced directly, as in the tests).
@@ -77,8 +84,125 @@ _nfo_each_kv() {
   done
 }
 
-# Resolve a value: if it's a directory, coerce to path:/ABS
-# else pass as-is.
+# --- Local-directory flake refs ---------------------------------------------
+# A local checkout can be handed to Nix two ways, and the choice is not a
+# detail:
+#
+#   path:/ABS       copies the *entire* directory tree into the store and does
+#                   not honour .gitignore. A sibling carrying build output
+#                   (Rust target/, nimcache/, node_modules/) is copied in full
+#                   on every lock change — measured at 19 GB / ~50 minutes for
+#                   one real repo. Worse, the store path is content-addressed
+#                   over all of it, so touching any generated file changes the
+#                   input hash and silently invalidates the dev shell.
+#
+#   git+file://ABS  enumerates through git: gitignored content is skipped
+#                   (19 GB -> 75 MB, ~50 min -> 13 s for that same repo) while
+#                   **uncommitted edits to tracked files still reach the
+#                   store**, which is the guarantee develop mode rests on.
+#
+# git+file: has two sharp edges, handled below rather than hidden:
+#   - Untracked (not merely unignored-but-new) files are invisible to it. We
+#     never silently downgrade to path: for them — one editor scratch file
+#     would restore the 50-minute copy — we emit a loud notice instead.
+#   - Submodule content is dropped unless ?submodules=1 is requested, but
+#     ?submodules=1 hard-fails on an *uninitialised* submodule, the state of
+#     any clone made without --recurse-submodules. So it is applied only when
+#     every submodule is initialised; otherwise we fall back to path:, which
+#     is faithful to what is on disk and cannot fail.
+
+# How many untracked paths to name before summarising the rest.
+_NFO_UNTRACKED_LIST_CAP=8
+
+# Warn about files git does not know about, which git+file: will therefore not
+# hand to Nix. `git add` alone is the whole remedy — no commit required.
+_nfo_warn_untracked() {
+  local _abs="$1" _list _f _count=0 _shown=0 _more
+  _list="$(git -C "$_abs" ls-files --others --exclude-standard 2>/dev/null || true)"
+  [[ -z "$_list" ]] && return 0
+  while IFS= read -r _f; do
+    [[ -n "$_f" ]] && _count=$(( _count + 1 ))
+  done <<< "$_list"
+  (( _count == 0 )) && return 0
+  _nfo_notice "NOTICE: '$_abs' is overridden via git+file:, which lists files through git."
+  _nfo_notice "  $_count untracked file(s) are therefore NOT part of what the dev shell builds:"
+  while IFS= read -r _f; do
+    [[ -z "$_f" ]] && continue
+    (( _shown >= _NFO_UNTRACKED_LIST_CAP )) && break
+    _nfo_notice "    $_f"
+    _shown=$(( _shown + 1 ))
+  done <<< "$_list"
+  _more=$(( _count - _shown ))
+  (( _more > 0 )) && _nfo_notice "    ... and $_more more (of $_count total)"
+  _nfo_notice "  To include them, run:  git -C '$_abs' add <path>..."
+  _nfo_notice "  Staging is enough - no commit is needed - and once a file is tracked,"
+  _nfo_notice "  later worktree edits to it flow into the shell normally."
+  return 0
+}
+
+# Warn that ?submodules=1 cannot be used, and say exactly how to earn it back.
+_nfo_warn_uninit_submodules() {
+  local _abs="$1" _subs="$2" _s
+  _nfo_notice "NOTICE: '$_abs' has uninitialised submodule(s):"
+  while IFS= read -r _s; do
+    [[ -n "$_s" ]] && _nfo_notice "    $_s"
+  done <<< "$_subs"
+  _nfo_notice "  Nix cannot fetch a git+file: tree with submodules unless they are checked"
+  _nfo_notice "  out, so this override falls back to path:, which copies the whole directory"
+  _nfo_notice "  tree into the store - gitignored build output included - and can be slow."
+  _nfo_notice "  To restore the fast override, run:"
+  _nfo_notice "    git -C '$_abs' submodule update --init --recursive"
+  return 0
+}
+
+# Print the flake ref for an existing absolute directory: git+file:// when git
+# can faithfully enumerate it, path: otherwise.
+_nfo_dir_flake_ref() {
+  local _abs="$1"
+  # No git at all: nothing to enumerate with.
+  command -v git >/dev/null 2>&1 || { printf 'path:%s' "$_abs"; return 0; }
+
+  # Only the *root* of a work tree qualifies. `git+file://<subdir>` would
+  # fetch the whole enclosing repository, not the subdirectory asked for.
+  local _top
+  _top="$(git -C "$_abs" rev-parse --show-toplevel 2>/dev/null || true)"
+  [[ -n "$_top" ]] || { printf 'path:%s' "$_abs"; return 0; }
+  _top="$(cd "$_top" 2>/dev/null && pwd -P)" || { printf 'path:%s' "$_abs"; return 0; }
+  [[ "$_top" == "$_abs" ]] || { printf 'path:%s' "$_abs"; return 0; }
+
+  # An unborn HEAD (freshly `git init`ed, nothing committed) gives git no tree
+  # to hand over.
+  git -C "$_abs" rev-parse --verify --quiet HEAD >/dev/null 2>&1 \
+    || { printf 'path:%s' "$_abs"; return 0; }
+
+  local _query=""
+  if [[ -f "$_abs/.gitmodules" ]]; then
+    # `git submodule status` marks an uninitialised submodule with a leading
+    # '-'; the remaining fields are "<sha> <path>[ (describe)]".
+    local _status _line _rest _uninit=""
+    _status="$(git -C "$_abs" submodule status --recursive 2>/dev/null || true)"
+    while IFS= read -r _line; do
+      [[ "$_line" == -* ]] || continue
+      _rest="${_line#-}"
+      _rest="${_rest#* }"
+      _rest="${_rest%% (*}"
+      [[ -n "$_rest" ]] && _uninit="${_uninit}${_rest}
+"
+    done <<< "$_status"
+    if [[ -n "$_uninit" ]]; then
+      _nfo_warn_uninit_submodules "$_abs" "$_uninit"
+      printf 'path:%s' "$_abs"
+      return 0
+    fi
+    _query="?submodules=1"
+  fi
+
+  _nfo_warn_untracked "$_abs"
+  printf 'git+file://%s%s' "$_abs" "$_query"
+}
+
+# Resolve a value: if it's a directory, coerce to a local flake ref
+# (git+file://ABS, or path:/ABS — see _nfo_dir_flake_ref); else pass as-is.
 _nfo_resolve_ref() {
   local _val="$1"
   local _base="${DIRENV_DIR:-}"
@@ -87,7 +211,7 @@ _nfo_resolve_ref() {
     local _abs
     if _abs="$(cd "$_val" 2>/dev/null && pwd -P)"; then
       [[ ! -f "$_abs/flake.nix" ]] && _direnv_nfo_log "warn '$_abs' has no flake.nix"
-      printf 'path:%s' "$_abs"
+      _nfo_dir_flake_ref "$_abs"
       return 0
     else
       _direnv_nfo_log "cannot access dir '$_val'"
@@ -96,7 +220,7 @@ _nfo_resolve_ref() {
     local _abs2
     if _abs2="$(cd "$_base/$_val" 2>/dev/null && pwd -P)"; then
       [[ ! -f "$_abs2/flake.nix" ]] && _direnv_nfo_log "warn '$_abs2' has no flake.nix"
-      printf 'path:%s' "$_abs2"
+      _nfo_dir_flake_ref "$_abs2"
       return 0
     else
       _direnv_nfo_log "cannot access dir '$_base/$_val'"
@@ -252,7 +376,8 @@ flake_override_args_quoted() {
       _direnv_nfo_log "warn sibling '$abs' has no flake.nix; skipping"
       return 0
     fi
-    _nfo_print_pair --override-input "$input" "path:$abs"
+    local ref; ref="$(_nfo_dir_flake_ref "$abs")"
+    _nfo_print_pair --override-input "$input" "$ref"
     _nfo_claim "$input"
   }
   _nfo_emit_fk() { local orig="$1" val="$2"; local ref; ref="$(_nfo_resolve_ref "$val")"; _nfo_print_pair --override-flake "$orig" "$ref"; }

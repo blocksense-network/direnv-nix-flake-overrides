@@ -18,7 +18,7 @@ Use it to point flake inputs (and/or registry refs) to local paths, specific com
   * `flake-override-args-quoted` → prints safely quoted flags for inline eval
   * `collect-flake-override-args` → prints one arg per line for easy `mapfile`
   * `with-local-flake-overrides` → leader for ad‑hoc `nix <subcmd>` usage
-* **Path smarts**: directory values are resolved to absolute and coerced to `path:/ABS`.
+* **Path smarts**: directory values are resolved to absolute and coerced to a local flake ref — `git+file:///ABS` (plus `?submodules=1` where needed) for a git work tree, `path:/ABS` otherwise. See [Local directory refs](#local-directory-refs).
 * **Safe quoting**: printer uses `printf %q` so baked scripts are robust.
 * **Zero-commit setup**: load via `source_url` pinned by hash and cached locally.
 
@@ -66,7 +66,7 @@ watch_file .env
 
 `name=ref` pairs separated by a delimiter that is illegal in URLs. Use `|` (recommended). If your value truly needs `|`, use `^` as the delimiter. Keys may include nested input paths like `foo/nixpkgs`.
 
-* Accepts directory paths → coerced to `path:/ABS`.
+* Accepts directory paths → coerced to `git+file:///ABS` or `path:/ABS` ([Local directory refs](#local-directory-refs)).
 * Accepts literal flake refs: `github:owner/repo`, `https://…`, `git+file:///…`, `path:/ABS`.
 
 **Example**
@@ -79,7 +79,7 @@ NIX_FLAKE_OVERRIDE_INPUTS='flake-parts=../flake-parts'
 **Effect** (conceptually):
 
 ```
---override-input flake-parts path:/ABS/PATH/TO/flake-parts
+--override-input flake-parts git+file:///ABS/PATH/TO/flake-parts
 ```
 
 ### 2) `NIX_FLAKE_OVERRIDE_FLAKES`
@@ -101,6 +101,51 @@ NIX_FLAKE_OVERRIDE_FLAKES='nixpkgs=github:NixOS/nixpkgs/nixos-24.05|myfork=githu
 ```
 
 > **Tip**: Use `NIX_FLAKE_OVERRIDE_INPUTS` for inputs declared inside `flake.nix`. Use `NIX_FLAKE_OVERRIDE_FLAKES` to rewrite registry lookups (e.g., command-line flake refs).
+
+---
+
+## Local directory refs
+
+A directory value is never handed to Nix as a bare path. It is coerced to one of two flake refs, and the choice is behavioural, not cosmetic.
+
+### Requirement
+
+An override that points at a local checkout MUST make Nix see:
+
+1. every file git tracks, **including uncommitted worktree edits** to them —
+   this is the entire reason local overrides exist;
+2. submodule content, where the checkout has submodules;
+
+and MUST NOT make Nix see:
+
+3. gitignored content (build output), which is neither an input to the build
+   nor stable, and whose presence in a content-addressed store path silently
+   invalidates the dev shell whenever a build touches it.
+
+### Behaviour
+
+| condition | emitted ref |
+|---|---|
+| root of a git work tree, ≥1 commit, no `.gitmodules` | `git+file:///ABS` |
+| …and `.gitmodules` present, all submodules initialised | `git+file:///ABS?submodules=1` |
+| …and any submodule uninitialised | `path:/ABS` + notice |
+| not a git work tree / not its root / unborn HEAD / no `git` | `path:/ABS` |
+
+`path:` copies the entire tree and ignores `.gitignore`, violating (3); measured at 19 GB and ~50 minutes for one real repo against 75 MB and 13 s for `git+file:`. `?submodules=1` satisfies (2) but hard-fails on an uninitialised submodule, so it is applied only when every submodule is checked out; otherwise `path:` is used, because being slow is better than being broken.
+
+### Untracked files
+
+`git+file:` cannot see a file git has never been told about, which is the one behaviour `path:` had that this loses. It MUST NOT be lost silently, and the plugin MUST NOT fall back to `path:` to paper over it — a single editor scratch file would restore the whole-tree copy and make build times unpredictable.
+
+Instead, before emitting a `git+file:` ref the plugin runs `git ls-files --others --exclude-standard` and, if the result is non-empty, prints a notice **on stderr** (never stdout, which is spliced verbatim into `use flake`) that:
+
+* states the count and names the files, capping the list and saying how many were elided;
+* states plainly that those files are not part of what the shell builds;
+* gives the runnable remedy — `git add` — and states that **staging alone suffices, no commit is needed**, after which worktree edits flow normally.
+
+### Note for downstream parsers
+
+Anything that reads these override arguments must accept `git+file://` (with an optional `?submodules=1` query) alongside `path:`. A parser matching only `path:` does not fail loudly; it silently observes "no overrides", which reintroduces exactly the stale-dev-shell bug this plugin exists to prevent.
 
 ---
 

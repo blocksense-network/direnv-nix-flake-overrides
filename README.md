@@ -51,6 +51,10 @@ Declare key=value pairs separated by a delimiter that is illegal in URLs. Use `|
 
 Values can be local paths, `github:` refs, `https://…`, `git+file:///…`, or `path:/ABS`.
 
+Local directories are coerced to an absolute flake ref — see
+[How local directories are handed to Nix](#how-local-directories-are-handed-to-nix)
+for which ref, and why it matters.
+
 ### 1) Override flake inputs declared in your `flake.nix`
 
 Variable: `NIX_FLAKE_OVERRIDE_INPUTS`
@@ -65,7 +69,7 @@ NIX_FLAKE_OVERRIDE_INPUTS='mylib=../my-lib|foo/nixpkgs=github:NixOS/nixpkgs/nixo
 Effect (conceptually):
 
 ```
---override-input mylib path:/ABS/PATH/TO/my-lib \
+--override-input mylib git+file:///ABS/PATH/TO/my-lib \
 --override-input foo/nixpkgs github:NixOS/nixpkgs/nixos-24.05
 ```
 
@@ -105,8 +109,8 @@ NIX_FLAKE_OVERRIDE_SIBLINGS='ct-test-src=ct-test|runquota-src=runquota'
 If `../ct-test` and `../runquota` exist, this expands to:
 
 ```
---override-input ct-test-src path:/ABS/ct-test \
---override-input runquota-src path:/ABS/runquota
+--override-input ct-test-src git+file:///ABS/ct-test \
+--override-input runquota-src git+file:///ABS/runquota
 ```
 
 #### Full auto — `NIX_FLAKE_OVERRIDE_AUTO`
@@ -123,6 +127,61 @@ NIX_FLAKE_OVERRIDE_AUTO_STRIP_SUFFIXES='-src'
 Reading the input names uses `nix flake metadata --json`, so `nix` and `jq` must be available; if either is missing, the auto pass is skipped with a warning (your explicit overrides still apply).
 
 **Precedence** — each input is overridden at most once: explicit `NIX_FLAKE_OVERRIDE_INPUTS` wins over `NIX_FLAKE_OVERRIDE_SIBLINGS`, which wins over `NIX_FLAKE_OVERRIDE_AUTO`. So you can enable auto globally and still pin a single input by hand.
+
+---
+
+## How local directories are handed to Nix
+
+A local checkout can be given to Nix two ways, and the difference is not cosmetic.
+
+`path:/ABS` copies the **entire** directory tree into the Nix store and does **not** honour `.gitignore`. On a checkout that carries build output — Rust `target/`, `nimcache/`, `node_modules/` — that means copying gigabytes on every lock change. One real repo measured 19 GB of tree for 3,719 tracked files, and roughly **50 minutes** per override. It is also a correctness problem: the store path is content-addressed over everything it copied, so touching a single generated file changes the input hash and silently invalidates the dev shell for everyone using that override.
+
+`git+file:///ABS` enumerates the directory **through git** instead. Gitignored content is skipped (the same repo: 19 GB → 75 MB, ~50 min → 13 s) while **uncommitted edits to tracked files still reach the store** — the guarantee that makes local overrides worth having in the first place.
+
+So a sibling that is the root of a git work tree with at least one commit is emitted as `git+file:///ABS`. Everything else keeps `path:/ABS`.
+
+### Untracked files are not in the build — and you will be told
+
+`git+file:` can only hand Nix the files git knows about. A brand-new file that has never been `git add`ed is invisible to it.
+
+The plugin never silently downgrades such a checkout back to `path:` — one editor scratch file would quietly restore the whole-tree copy and make build times unpredictable. Instead it prints a notice **on stderr** (stdout is spliced straight into `use flake`, so nothing else may go there) naming the files and how many were elided:
+
+```
+flake-overrides: NOTICE: '/ABS/my-lib' is overridden via git+file:, which lists files through git.
+flake-overrides:   12 untracked file(s) are therefore NOT part of what the dev shell builds:
+flake-overrides:     scratch-1.nim
+…
+flake-overrides:     ... and 4 more (of 12 total)
+flake-overrides:   To include them, run:  git -C '/ABS/my-lib' add <path>...
+flake-overrides:   Staging is enough - no commit is needed - and once a file is tracked,
+flake-overrides:   later worktree edits to it flow into the shell normally.
+```
+
+`git add` really is the whole remedy: staging alone makes the file visible, and from then on your worktree edits to it flow into the shell as usual.
+
+### Submodules
+
+Submodule content is dropped from a `git+file:` fetch unless `?submodules=1` is requested, so a checkout containing `.gitmodules` gets `git+file:///ABS?submodules=1`.
+
+But `?submodules=1` **hard-fails** when a submodule is uninitialised — the state of any clone made without `--recurse-submodules`. Rather than break your shell, such a checkout falls back to `path:` (faithful to what is on disk, cannot fail) with a notice telling you how to earn the fast path back:
+
+```
+flake-overrides: NOTICE: '/ABS/my-lib' has uninitialised submodule(s):
+flake-overrides:     vendor/sub
+…
+flake-overrides:   To restore the fast override, run:
+flake-overrides:     git -C '/ABS/my-lib' submodule update --init --recursive
+```
+
+### When `path:` is still used
+
+- the directory is not a git work tree at all;
+- the directory is *inside* a repo but is not its root (`git+file://<subdir>` would fetch the whole enclosing repository);
+- the repo has no commit yet, so git has no tree to hand over;
+- a submodule is uninitialised (above);
+- `git` is not on `PATH`.
+
+> **If you parse these override arguments**, note that a local checkout is now spelled `git+file:///ABS` (optionally with `?submodules=1`) as well as `path:/ABS`. A parser that matches only `path:` will not fail loudly — it will quietly see no overrides, which is exactly the stale-dev-shell class of bug this plugin exists to prevent.
 
 ---
 
