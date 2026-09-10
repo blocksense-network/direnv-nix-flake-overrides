@@ -283,6 +283,25 @@ def test_non_git_sibling_keeps_path_fallback(tmp_path: Path):
     assert ref.startswith("path:/"), ref
 
 
+def test_linked_git_worktree_behaves_like_a_normal_checkout(tmp_path: Path):
+    """`git worktree add` siblings are the normal layout in a multi-repo
+    workspace, and their `.git` is a file, not a directory."""
+    _require("git")
+    _require("nix")
+    root = tmp_path / "siblings"
+    origin = make_git_sibling(tmp_path / "origins", "mylib")
+    root.mkdir(parents=True, exist_ok=True)
+    git(origin, "worktree", "add", "-q", "-b", "feat", str(root / "mylib"))
+    assert (root / "mylib" / ".git").is_file(), "linked worktree marker"
+    (root / "mylib" / "tracked.txt").write_text("EDITED-IN-LINKED-WORKTREE\n")
+
+    ref, _ = sibling_ref(tmp_path / "proj", root, "mylib", "mylib")
+    assert ref.startswith("git+file://"), ref
+    store = fetch_tree(ref)
+    assert (store / "tracked.txt").read_text() == "EDITED-IN-LINKED-WORKTREE\n"
+    assert not (store / "build-output").exists(), "gitignored output must stay out"
+
+
 def test_subdirectory_of_a_git_repo_keeps_path_fallback(tmp_path: Path):
     """`git+file://<subdir>` would fetch the whole enclosing repo, so a sibling
     that is merely *inside* a repo rather than its root must stay on path:."""
