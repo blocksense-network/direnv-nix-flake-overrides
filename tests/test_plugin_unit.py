@@ -459,3 +459,74 @@ def test_auto_override_does_not_duplicate_explicit(tmp_path: Path):
     assert _argv_from_func(tmp_path, env, stub_inputs=["foo"]) == [
         "--override-input", "foo", "github:owner/repo",
     ]
+
+
+# NIX_FLAKE_OVERRIDE_EXCLUDE: keep named inputs on their pinned ref
+# --------------------------------------------------------------------------
+
+def test_exclude_skips_auto_override(tmp_path: Path):
+    root = tmp_path / "siblings"
+    _make_sibling(root, "foo")
+    _make_sibling(root, "big")
+    env = {
+        "NIX_FLAKE_OVERRIDE_SIBLINGS_ROOT": str(root),
+        "NIX_FLAKE_OVERRIDE_AUTO": "1",
+        "NIX_FLAKE_OVERRIDE_EXCLUDE": "big",
+    }
+    toks = _argv_from_func(tmp_path, env, stub_inputs=["foo", "big"])
+    assert toks[:2] == ["--override-input", "foo"]
+    assert "big" not in toks, toks
+    assert len(toks) == 3, toks
+
+
+def test_exclude_applies_to_stripped_suffix_input_name(tmp_path: Path):
+    root = tmp_path / "siblings"
+    _make_sibling(root, "runquota")
+    env = {
+        "NIX_FLAKE_OVERRIDE_SIBLINGS_ROOT": str(root),
+        "NIX_FLAKE_OVERRIDE_AUTO": "1",
+        "NIX_FLAKE_OVERRIDE_AUTO_STRIP_SUFFIXES": "-src",
+        # Names the INPUT, not the sibling directory.
+        "NIX_FLAKE_OVERRIDE_EXCLUDE": "runquota-src",
+    }
+    assert _argv_from_func(tmp_path, env, stub_inputs=["runquota-src"]) == []
+
+
+def test_exclude_skips_curated_sibling_and_accepts_commas(tmp_path: Path):
+    root = tmp_path / "siblings"
+    for n in ("a", "b", "c"):
+        _make_sibling(root, n)
+    env = {
+        "NIX_FLAKE_OVERRIDE_SIBLINGS_ROOT": str(root),
+        "NIX_FLAKE_OVERRIDE_SIBLINGS": "a|b|c",
+        "NIX_FLAKE_OVERRIDE_EXCLUDE": "a, c",
+    }
+    toks = _argv_from_func(tmp_path, env)
+    assert toks[:2] == ["--override-input", "b"], toks
+    assert len(toks) == 3, toks
+
+
+def test_exclude_does_not_match_a_prefix(tmp_path: Path):
+    root = tmp_path / "siblings"
+    _make_sibling(root, "agent-harbor")
+    env = {
+        "NIX_FLAKE_OVERRIDE_SIBLINGS_ROOT": str(root),
+        "NIX_FLAKE_OVERRIDE_AUTO": "1",
+        "NIX_FLAKE_OVERRIDE_EXCLUDE": "agent",
+    }
+    toks = _argv_from_func(tmp_path, env, stub_inputs=["agent-harbor"])
+    assert toks[:2] == ["--override-input", "agent-harbor"], toks
+
+
+def test_exclude_leaves_explicit_input_alone(tmp_path: Path):
+    root = tmp_path / "siblings"
+    _make_sibling(root, "foo")
+    env = {
+        "NIX_FLAKE_OVERRIDE_SIBLINGS_ROOT": str(root),
+        "NIX_FLAKE_OVERRIDE_AUTO": "1",
+        "NIX_FLAKE_OVERRIDE_INPUTS": "foo=github:owner/repo",
+        "NIX_FLAKE_OVERRIDE_EXCLUDE": "foo",
+    }
+    assert _argv_from_func(tmp_path, env, stub_inputs=["foo"]) == [
+        "--override-input", "foo", "github:owner/repo",
+    ]
