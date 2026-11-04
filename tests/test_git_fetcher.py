@@ -11,7 +11,8 @@ changes the input hash and silently invalidates the dev shell.
 still honouring uncommitted edits to tracked files — the load-bearing
 develop-mode guarantee. The trade-offs it introduces (untracked files are
 invisible; submodules need `?submodules=1`; `?submodules=1` hard-fails on an
-uninitialised submodule) are what the tests below pin down.
+uninitialised submodule, so that case drops the query rather than falling back
+to `path:`) are what the tests below pin down.
 
 These tests assert against the *real* Nix store contents via
 `builtins.fetchTree`, not against the emitted string alone: the string is only
@@ -243,10 +244,13 @@ def test_no_gitmodules_means_no_submodules_query(tmp_path: Path):
     assert "submodules" not in ref, ref
 
 
-def test_uninitialised_submodule_falls_back_to_path_without_failing(tmp_path: Path):
+def test_uninitialised_submodule_stays_on_git_file_without_submodules(tmp_path: Path):
     """`?submodules=1` hard-fails on an uninitialised submodule — the state of
-    any clone made without `--recurse-submodules`. Fall back to `path:`, which
-    is faithful to what is on disk and cannot fail."""
+    any clone made without `--recurse-submodules`. Drop the query but stay on
+    `git+file:`: falling back to `path:` would copy the gitignored build output
+    too, and a checkout with submodules is typically the one where that runs to
+    hundreds of GB. The notice must say the submodule content is absent and
+    give the remedy."""
     _require("git")
     _require("nix")
     root = tmp_path / "siblings"
@@ -258,16 +262,22 @@ def test_uninitialised_submodule_falls_back_to_path_without_failing(tmp_path: Pa
         check=True, capture_output=True, text=True,
     )
     assert not any((root / "mylib" / "sub").iterdir()), "submodule should be uninitialised"
+    # The clone has no build output yet; give it some, as a real checkout would.
+    (root / "mylib" / "build-output").mkdir()
+    (root / "mylib" / "build-output" / "huge.bin").write_text("pretend this is 170 GB\n")
 
     ref, err = sibling_ref(tmp_path / "proj", root, "mylib", "mylib")
-    assert ref.startswith("path:"), (
-        f"uninitialised submodule must fall back to path:, got {ref}"
+    assert ref.startswith("git+file://"), (
+        f"uninitialised submodule must not fall back to path:, got {ref}"
     )
+    assert "submodules" not in ref, ref
     assert "submodule" in err.lower(), err
     assert "--init" in err, f"the notice must give the runnable remedy: {err}"
-    # And the fallback must actually work.
     store = fetch_tree(ref)
     assert (store / "tracked.txt").is_file()
+    assert not (store / "build-output").exists(), (
+        f"gitignored build output leaked into {store}"
+    )
 
 
 # --------------------------------------------------------------------------

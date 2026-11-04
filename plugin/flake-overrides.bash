@@ -108,8 +108,12 @@ _nfo_each_kv() {
 #   - Submodule content is dropped unless ?submodules=1 is requested, but
 #     ?submodules=1 hard-fails on an *uninitialised* submodule, the state of
 #     any clone made without --recurse-submodules. So it is applied only when
-#     every submodule is initialised; otherwise we fall back to path:, which
-#     is faithful to what is on disk and cannot fail.
+#     every submodule is initialised; otherwise we still emit git+file:, but
+#     without ?submodules=1, and say loudly that submodule content is absent.
+#     We do NOT fall back to path: here: a checkout big enough to have
+#     submodules is exactly the one whose gitignored worktrees and build
+#     output run to tens or hundreds of GB, and `git submodule deinit` alone
+#     would otherwise turn a 13-second override into an hour-long copy.
 
 # How many untracked paths to name before summarising the rest.
 _NFO_UNTRACKED_LIST_CAP=8
@@ -148,9 +152,10 @@ _nfo_warn_uninit_submodules() {
     [[ -n "$_s" ]] && _nfo_notice "    $_s"
   done <<< "$_subs"
   _nfo_notice "  Nix cannot fetch a git+file: tree with submodules unless they are checked"
-  _nfo_notice "  out, so this override falls back to path:, which copies the whole directory"
-  _nfo_notice "  tree into the store - gitignored build output included - and can be slow."
-  _nfo_notice "  To restore the fast override, run:"
+  _nfo_notice "  out, so this override is passed WITHOUT submodule content: every submodule"
+  _nfo_notice "  directory is empty in what the dev shell builds. (It is deliberately not"
+  _nfo_notice "  passed as path:, which would copy gitignored build output too.)"
+  _nfo_notice "  To include the submodules, run:"
   _nfo_notice "    git -C '$_abs' submodule update --init --recursive"
   return 0
 }
@@ -191,10 +196,9 @@ _nfo_dir_flake_ref() {
     done <<< "$_status"
     if [[ -n "$_uninit" ]]; then
       _nfo_warn_uninit_submodules "$_abs" "$_uninit"
-      printf 'path:%s' "$_abs"
-      return 0
+    else
+      _query="?submodules=1"
     fi
-    _query="?submodules=1"
   fi
 
   _nfo_warn_untracked "$_abs"
@@ -301,6 +305,22 @@ _nfo_flake_input_names() {
     | jq -r '.locks as $l | ($l.nodes[$l.root].inputs // {}) | keys[]' 2>/dev/null
 }
 
+# True if <input> is listed in NIX_FLAKE_OVERRIDE_EXCLUDE (space- or
+# comma-separated input names). Excluded inputs are never overridden by the
+# sibling passes (NIX_FLAKE_OVERRIDE_SIBLINGS and NIX_FLAKE_OVERRIDE_AUTO), so
+# they stay on the ref the flake pins. An explicit NIX_FLAKE_OVERRIDE_INPUTS
+# entry is a deliberate per-input choice and is not affected.
+_nfo_is_excluded() {
+  local _name="$1" _list="${NIX_FLAKE_OVERRIDE_EXCLUDE:-}" _x _oldifs
+  [[ -z "$_list" ]] && return 1
+  _oldifs="$IFS"; IFS=$', \t\n'
+  for _x in $_list; do
+    if [[ "$_x" == "$_name" ]]; then IFS="$_oldifs"; return 0; fi
+  done
+  IFS="$_oldifs"
+  return 1
+}
+
 # Full auto-override: for every flake input, look for a same-named sibling and,
 # if present, emit an override via `callback <input> <dir>`. The optional
 # NIX_FLAKE_OVERRIDE_AUTO_STRIP_SUFFIXES (comma/space list, e.g. "-src,-flake")
@@ -368,6 +388,10 @@ flake_override_args_quoted() {
   _nfo_emit_sibling() {
     local input="$1" dir="$2"
     _nfo_is_claimed "$input" && return 0
+    if _nfo_is_excluded "$input"; then
+      _direnv_nfo_log "'$input' is in NIX_FLAKE_OVERRIDE_EXCLUDE; keeping its pinned ref"
+      return 0
+    fi
     local root; root="$(_nfo_siblings_root)"
     local cand="$root/$dir" abs
     [[ -d "$cand" ]] || return 0

@@ -17,7 +17,7 @@ Add this to your project’s `.envrc`:
 # See https://direnv-flake-overrides.blocksense.network
 # Allows flake inputs to be easily overridden from your local .env file
 source_url "https://direnv-flake-overrides.blocksense.network/plugin" \
-           "sha256-ixCgoLDPJelkuT5gukgffNxg9edSZEfVOK5QciktI74="
+           "sha256-CMc2XpOI2l3pi9j+GKjjInH0AG9lcw4Pzapi0iM1sNI="
 
 # Optional: load overrides from .env
 dotenv_if_exists .env
@@ -50,7 +50,7 @@ watch_file .env
 >   watch_file "$_fo_local"; source "$_fo_local"
 > else
 >   source_url "https://direnv-flake-overrides.blocksense.network/plugin" \
->              "sha256-ixCgoLDPJelkuT5gukgffNxg9edSZEfVOK5QciktI74="
+>              "sha256-CMc2XpOI2l3pi9j+GKjjInH0AG9lcw4Pzapi0iM1sNI="
 > fi
 > unset _fo_local
 > ```
@@ -146,6 +146,17 @@ NIX_FLAKE_OVERRIDE_AUTO_STRIP_SUFFIXES='-src'
 
 Reading the input names uses `nix flake metadata --json`, so `nix` and `jq` must be available; if either is missing, the auto pass is skipped with a warning (your explicit overrides still apply).
 
+#### Excluding inputs — `NIX_FLAKE_OVERRIDE_EXCLUDE`
+
+A space- or comma-separated list of **input names** that the sibling passes (`NIX_FLAKE_OVERRIDE_SIBLINGS` and `NIX_FLAKE_OVERRIDE_AUTO`) must leave alone, even when a matching sibling exists. Use it with full auto for an input that the flake pins deliberately, or for a sibling whose tracked tree is too large to re-hash on every reload:
+
+```dotenv
+NIX_FLAKE_OVERRIDE_AUTO=1
+NIX_FLAKE_OVERRIDE_EXCLUDE='agent-harbor'
+```
+
+Names are matched exactly and are input names, not sibling directory names (exclude `runquota-src`, not `runquota`). An explicit `NIX_FLAKE_OVERRIDE_INPUTS` entry is unaffected.
+
 **Precedence** — each input is overridden at most once: explicit `NIX_FLAKE_OVERRIDE_INPUTS` wins over `NIX_FLAKE_OVERRIDE_SIBLINGS`, which wins over `NIX_FLAKE_OVERRIDE_AUTO`. So you can enable auto globally and still pin a single input by hand.
 
 ---
@@ -183,22 +194,23 @@ flake-overrides:   later worktree edits to it flow into the shell normally.
 
 Submodule content is dropped from a `git+file:` fetch unless `?submodules=1` is requested, so a checkout containing `.gitmodules` gets `git+file:///ABS?submodules=1`.
 
-But `?submodules=1` **hard-fails** when a submodule is uninitialised — the state of any clone made without `--recurse-submodules`. Rather than break your shell, such a checkout falls back to `path:` (faithful to what is on disk, cannot fail) with a notice telling you how to earn the fast path back:
+But `?submodules=1` **hard-fails** when a submodule is uninitialised — the state of any clone made without `--recurse-submodules`. Rather than break your shell, such a checkout is emitted as plain `git+file:///ABS` — **without** submodule content — with a notice saying so and telling you how to get it back:
 
 ```
 flake-overrides: NOTICE: '/ABS/my-lib' has uninitialised submodule(s):
 flake-overrides:     vendor/sub
 …
-flake-overrides:   To restore the fast override, run:
+flake-overrides:   To include the submodules, run:
 flake-overrides:     git -C '/ABS/my-lib' submodule update --init --recursive
 ```
+
+It deliberately does **not** fall back to `path:`. Checkouts that carry submodules tend to be the big ones, and their gitignored worktrees and build output can run to hundreds of GB: a single `git submodule deinit` would otherwise turn a seconds-long override into an hour-long copy into the store.
 
 ### When `path:` is still used
 
 - the directory is not a git work tree at all;
 - the directory is *inside* a repo but is not its root (`git+file://<subdir>` would fetch the whole enclosing repository);
 - the repo has no commit yet, so git has no tree to hand over;
-- a submodule is uninitialised (above);
 - `git` is not on `PATH`.
 
 > **If you parse these override arguments**, note that a local checkout is now spelled `git+file:///ABS` (optionally with `?submodules=1`) as well as `path:/ABS`. A parser that matches only `path:` will not fail loudly — it will quietly see no overrides, which is exactly the stale-dev-shell class of bug this plugin exists to prevent.
