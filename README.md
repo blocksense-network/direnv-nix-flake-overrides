@@ -17,7 +17,7 @@ Add this to your project’s `.envrc`:
 # See https://direnv-flake-overrides.blocksense.network
 # Allows flake inputs to be easily overridden from your local .env file
 source_url "https://direnv-flake-overrides.blocksense.network/plugin" \
-           "sha256-CMc2XpOI2l3pi9j+GKjjInH0AG9lcw4Pzapi0iM1sNI="
+           "sha256-gRaLggpZKWRFPhTwRBz32M8GICozBSQ6kaDPBszblnE="
 
 # Optional: load overrides from .env
 dotenv_if_exists .env
@@ -50,7 +50,7 @@ watch_file .env
 >   watch_file "$_fo_local"; source "$_fo_local"
 > else
 >   source_url "https://direnv-flake-overrides.blocksense.network/plugin" \
->              "sha256-CMc2XpOI2l3pi9j+GKjjInH0AG9lcw4Pzapi0iM1sNI="
+>              "sha256-gRaLggpZKWRFPhTwRBz32M8GICozBSQ6kaDPBszblnE="
 > fi
 > unset _fo_local
 > ```
@@ -206,6 +206,10 @@ flake-overrides:     git -C '/ABS/my-lib' submodule update --init --recursive
 
 It deliberately does **not** fall back to `path:`. Checkouts that carry submodules tend to be the big ones, and their gitignored worktrees and build output can run to hundreds of GB: a single `git submodule deinit` would otherwise turn a seconds-long override into an hour-long copy into the store.
 
+### Shallow clones
+
+A shallow clone (`git clone --depth 1`, or the depth-1 checkouts CI jobs commonly make) has no history for Nix to count `revCount` over. From Nix 2.35 on, locking such a checkout as `git+file:///ABS` fails with `'/ABS/my-lib' is a shallow Git repository, so 'revCount' is not available`, and older Nix either refused it or recorded a wrong `revCount`. So a shallow checkout is emitted with `shallow=1` — `git+file:///ABS?shallow=1`, or `git+file:///ABS?shallow=1&submodules=1` — the same parameter Nix adds itself when you pass it the bare directory. The tree Nix sees is identical; the lock marks that input `shallow` and, on current Nix, records no `revCount` for it. Complete clones are unaffected.
+
 ### When `path:` is still used
 
 - the directory is not a git work tree at all;
@@ -213,7 +217,7 @@ It deliberately does **not** fall back to `path:`. Checkouts that carry submodul
 - the repo has no commit yet, so git has no tree to hand over;
 - `git` is not on `PATH`.
 
-> **If you parse these override arguments**, note that a local checkout is now spelled `git+file:///ABS` (optionally with `?submodules=1`) as well as `path:/ABS`. A parser that matches only `path:` will not fail loudly — it will quietly see no overrides, which is exactly the stale-dev-shell class of bug this plugin exists to prevent.
+> **If you parse these override arguments**, note that a local checkout is now spelled `git+file:///ABS` (optionally with a `shallow=1` and/or `submodules=1` query) as well as `path:/ABS`. A parser that matches only `path:` will not fail loudly — it will quietly see no overrides, which is exactly the stale-dev-shell class of bug this plugin exists to prevent.
 
 ---
 

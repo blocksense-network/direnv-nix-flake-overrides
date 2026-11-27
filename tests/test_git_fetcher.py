@@ -52,19 +52,23 @@ def git(repo: Path, *args: str) -> str:
 def fetch_tree(ref: str) -> Path:
     """Realize a flake ref into the store and return the store path.
 
-    Goes through `nix flake metadata`, i.e. the very same flakeref parser and
+    Goes through `nix flake prefetch`, i.e. the very same flakeref parser and
     fetcher that consumes an `--override-input` value, so what the tests see is
-    what the dev shell would see. `--no-write-lock-file` keeps the fetch from
-    dropping a `flake.lock` into the fixture (which would itself show up as an
-    untracked file and skew the other assertions)."""
+    what the dev shell would see. Not `nix flake metadata`: from Nix 2.35 on it
+    reports the store path without copying the source there, so a content
+    assertion could read a path that does not exist, and a negative one
+    ("this file is absent") would then pass vacuously. `prefetch` copies it,
+    and it does not lock, so no `flake.lock` lands in the fixture (which
+    would itself show up as an untracked file and skew the other assertions)."""
     import json
     cp = subprocess.run(
-        ["nix", *NIX_FEATURES, "flake", "metadata", "--json",
-         "--no-write-lock-file", ref],
+        ["nix", *NIX_FEATURES, "flake", "prefetch", "--json", ref],
         text=True, capture_output=True, check=False,
     )
     assert cp.returncode == 0, f"fetching {ref} failed:\n{cp.stderr}"
-    return Path(json.loads(cp.stdout)["path"])
+    store = Path(json.loads(cp.stdout)["storePath"])
+    assert store.is_dir(), f"{ref} was not realized into the store at {store}"
+    return store
 
 
 def make_flake(d: Path) -> None:
@@ -278,6 +282,145 @@ def test_uninitialised_submodule_stays_on_git_file_without_submodules(tmp_path: 
     assert not (store / "build-output").exists(), (
         f"gitignored build output leaked into {store}"
     )
+
+
+# --------------------------------------------------------------------------
+# Shallow clones
+# --------------------------------------------------------------------------
+
+def shallow_clone(origin: Path, dest: Path, *, submodules: bool = False) -> Path:
+    """Clone `origin` at depth 1, as CI sibling provisioning does.
+
+    `file://` is required: git ignores `--depth` for a plain local path."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "-c", "protocol.file.allow=always", "clone", "-q", "--depth", "1",
+         *(["--recurse-submodules"] if submodules else []),
+         f"file://{origin}", str(dest)],
+        check=True, capture_output=True, text=True,
+    )
+    assert git(dest, "rev-parse", "--is-shallow-repository").strip() == "true"
+    return dest
+
+
+def lock_with_override(tmp_path: Path, ref: str) -> dict:
+    """Lock a consumer flake whose `mylib` input is overridden with `ref`.
+
+    `nix flake metadata <ref>` on the sibling alone does not reach the failure:
+    it is the in-memory lock UPDATE an `--override-input` forces on the
+    CONSUMER that records `revCount`, which a shallow repository cannot supply.
+    That is what nix-direnv's `use flake` runs into. `--no-write-lock-file`
+    keeps the update in memory, as `use flake` does, so a dirty override (an
+    unlocked input, which Nix refuses to write) is still exercised."""
+    import json
+    consumer = tmp_path / "consumer"
+    consumer.mkdir(parents=True, exist_ok=True)
+    (consumer / "flake.nix").write_text(
+        '{ inputs.mylib.url = "path:/nonexistent-replaced-by-override"; '
+        "outputs = _: {}; }\n"
+    )
+    cp = subprocess.run(
+        ["nix", *NIX_FEATURES, "flake", "metadata", "--json",
+         "--no-write-lock-file", f"path:{consumer}",
+         "--override-input", "mylib", ref],
+        text=True, capture_output=True, check=False,
+    )
+    assert cp.returncode == 0, f"locking with override {ref} failed:\n{cp.stderr}"
+    return json.loads(cp.stdout)["locks"]["nodes"]["mylib"]["locked"]
+
+
+def test_shallow_clone_emits_shallow_query(tmp_path: Path):
+    """Nix 2.35+ refuses to lock a shallow `git+file:` input without
+    `shallow=1` ("is a shallow Git repository, so 'revCount' is not
+    available"); Nix adds the same parameter itself when it resolves a bare
+    path to a shallow repository."""
+    _require("git")
+    root = tmp_path / "siblings"
+    origin = make_git_sibling(tmp_path / "origins", "mylib")
+    (origin / "tracked.txt").write_text("second commit\n")
+    git(origin, "commit", "-qam", "second")
+    shallow_clone(origin, root / "mylib")
+    ref, _ = sibling_ref(tmp_path / "proj", root, "mylib", "mylib")
+    assert ref.startswith("git+file://"), ref
+    assert ref.endswith("/mylib?shallow=1"), ref
+
+
+def test_complete_clone_gets_no_shallow_query(tmp_path: Path):
+    """`shallow=1` drops `revCount` from the lock on current Nix, so it is
+    added only where there is no history to count."""
+    _require("git")
+    root = tmp_path / "siblings"
+    make_git_sibling(root, "mylib")
+    ref, _ = sibling_ref(tmp_path / "proj", root, "mylib", "mylib")
+    assert "shallow" not in ref, ref
+
+
+def test_clean_shallow_clone_locks_as_an_override_input(tmp_path: Path):
+    """The CI case: a pristine depth-1 clone. It must be CLEAN to exercise the
+    failure, because Nix records no `revCount` for a dirty work tree and so
+    never asks for one. On Nix 2.35+ this fails without `shallow=1`."""
+    _require("git")
+    _require("nix")
+    root = tmp_path / "siblings"
+    origin = make_git_sibling(tmp_path / "origins", "mylib")
+    (origin / "tracked.txt").write_text("second commit\n")
+    git(origin, "commit", "-qam", "second")
+    shallow_clone(origin, root / "mylib")
+    assert git(root / "mylib", "status", "--porcelain").strip() == ""
+    ref, _ = sibling_ref(tmp_path / "proj", root, "mylib", "mylib")
+    locked = lock_with_override(tmp_path, ref)
+    assert locked.get("type") == "git", locked
+    assert locked.get("rev") == git(root / "mylib", "rev-parse", "HEAD").strip(), locked
+    # The plugin's contribution, on every Nix version. Whether `revCount` is
+    # then left out is Nix's business: 2.34+ omit it, 2.28 still records one
+    # counted from the graft.
+    assert locked.get("shallow") is True, locked
+    store = fetch_tree(ref)
+    assert (store / "tracked.txt").read_text() == "second commit\n"
+
+
+def test_edits_in_a_shallow_clone_reach_the_store(tmp_path: Path):
+    _require("git")
+    _require("nix")
+    root = tmp_path / "siblings"
+    origin = make_git_sibling(tmp_path / "origins", "mylib")
+    shallow_clone(origin, root / "mylib")
+    (root / "mylib" / "tracked.txt").write_text("EDITED-IN-SHALLOW-CLONE\n")
+    ref, _ = sibling_ref(tmp_path / "proj", root, "mylib", "mylib")
+    lock_with_override(tmp_path, ref)
+    store = fetch_tree(ref)
+    assert (store / "tracked.txt").read_text() == "EDITED-IN-SHALLOW-CLONE\n"
+
+
+def test_shallow_clone_with_submodules_gets_both_queries(tmp_path: Path):
+    _require("git")
+    _require("nix")
+    root = tmp_path / "siblings"
+    origin = make_submodule_sibling(tmp_path / "origins", "mylib")
+    shallow_clone(origin, root / "mylib", submodules=True)
+    ref, _ = sibling_ref(tmp_path / "proj", root, "mylib", "mylib")
+    assert ref.endswith("/mylib?shallow=1&submodules=1"), ref
+    lock_with_override(tmp_path, ref)
+    store = fetch_tree(ref)
+    assert (store / "sub" / "sub-file.txt").is_file(), (
+        f"submodule content missing from {store}"
+    )
+
+
+def test_linked_worktree_of_a_shallow_clone_is_shallow(tmp_path: Path):
+    """In a linked worktree `.git` is a file and the `shallow` marker lives in
+    the common git directory, so the check must ask git, not the filesystem."""
+    _require("git")
+    _require("nix")
+    root = tmp_path / "siblings"
+    origin = make_git_sibling(tmp_path / "origins", "mylib")
+    clone = shallow_clone(origin, tmp_path / "clones" / "mylib")
+    root.mkdir(parents=True, exist_ok=True)
+    git(clone, "worktree", "add", "-q", "-b", "feat", str(root / "mylib"))
+    assert (root / "mylib" / ".git").is_file(), "linked worktree marker"
+    ref, _ = sibling_ref(tmp_path / "proj", root, "mylib", "mylib")
+    assert ref.endswith("/mylib?shallow=1"), ref
+    lock_with_override(tmp_path, ref)
 
 
 # --------------------------------------------------------------------------
