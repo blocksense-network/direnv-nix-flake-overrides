@@ -130,6 +130,9 @@ and MUST NOT make Nix see:
 | …and `.gitmodules` present, all submodules initialised | `git+file:///ABS?submodules=1` |
 | …and any submodule uninitialised | `path:/ABS` + notice |
 | not a git work tree / not its root / unborn HEAD / no `git` | `path:/ABS` |
+| any `git+file:` row above, and the repository is shallow | the same ref with `shallow=1` added to its query (`?shallow=1`, `?shallow=1&submodules=1`) |
+
+**Shallow clones.** A shallow repository (`git rev-parse --is-shallow-repository` prints `true`; this covers linked worktrees, whose `.git` is a file) has no history below its graft, so Nix cannot compute `revCount` for it. Since Nix 2.35 locking a `git+file:` input of one without `shallow=1` fails ("is a shallow Git repository, so 'revCount' is not available"); earlier releases either refused it (Nix 2.18) or accepted it and recorded a `revCount` counted from the graft, which is wrong (measured on Nix 2.28 and 2.34: `revCount = 1` for a depth-1 clone of a three-commit history). The plugin therefore emits `shallow=1` for a shallow checkout, which is what Nix itself adds when it resolves a bare path to a shallow repository. The fetched tree and its `narHash` are unchanged; the lock records `shallow = true` and, on Nix 2.34 and later, no `revCount` (Nix 2.28 still records one counted from the graft). A complete clone does not get `shallow=1`, so it keeps `revCount`.
 
 `path:` copies the entire tree and ignores `.gitignore`, violating (3); measured at 19 GB and ~50 minutes for one real repo against 75 MB and 13 s for `git+file:`. `?submodules=1` satisfies (2) but hard-fails on an uninitialised submodule, so it is applied only when every submodule is checked out; otherwise `path:` is used, because being slow is better than being broken.
 
@@ -145,7 +148,7 @@ Instead, before emitting a `git+file:` ref the plugin runs `git ls-files --other
 
 ### Note for downstream parsers
 
-Anything that reads these override arguments must accept `git+file://` (with an optional `?submodules=1` query) alongside `path:`. A parser matching only `path:` does not fail loudly; it silently observes "no overrides", which reintroduces exactly the stale-dev-shell bug this plugin exists to prevent.
+Anything that reads these override arguments must accept `git+file://` (with an optional query of `shallow=1` and/or `submodules=1`) alongside `path:`. A parser matching only `path:` does not fail loudly; it silently observes "no overrides", which reintroduces exactly the stale-dev-shell bug this plugin exists to prevent.
 
 ---
 

@@ -180,7 +180,29 @@ _nfo_dir_flake_ref() {
   git -C "$_abs" rev-parse --verify --quiet HEAD >/dev/null 2>&1 \
     || { printf 'path:%s' "$_abs"; return 0; }
 
-  local _query=""
+  # Query parameters, joined with '&' and prefixed with '?' at the end.
+  local _params=()
+
+  # A shallow clone (`git clone --depth N`, or `git fetch --depth 1 <sha>` as
+  # CI sibling provisioning does) has no commit graph below its graft, so Nix
+  # cannot count `revCount` for it. Since Nix 2.35 (NixOS/nix e9336fa3a7,
+  # "feat(git): make revCount lazy") locking a `git+file:` input of a shallow
+  # repository fails with "'<dir>' is a shallow Git repository, so 'revCount'
+  # is not available" unless the ref carries `shallow=1`; Nix 2.28-2.34 still
+  # accepted it. `shallow=1` is exactly what Nix itself adds when it resolves a
+  # path-like flake reference to a shallow repository (libflake flakeref.cc,
+  # `parsePathFlakeRefWithFragment`), so this keeps the emitted ref equivalent
+  # to the one Nix would have chosen for the bare directory. It changes only
+  # which lock attributes are recorded (no `revCount` on Nix 2.34+; 2.28 still
+  # records one counted from the graft); the fetched tree and its
+  # narHash are the same. A complete clone keeps the plain ref, and with it
+  # `revCount`. `rev-parse --is-shallow-repository` rather than testing
+  # `.git/shallow`, because in a linked worktree `.git` is a file and the
+  # shallow marker lives in the common git directory.
+  if [[ "$(git -C "$_abs" rev-parse --is-shallow-repository 2>/dev/null || true)" == true ]]; then
+    _params+=("shallow=1")
+  fi
+
   if [[ -f "$_abs/.gitmodules" ]]; then
     # `git submodule status` marks an uninitialised submodule with a leading
     # '-'; the remaining fields are "<sha> <path>[ (describe)]".
@@ -197,11 +219,16 @@ _nfo_dir_flake_ref() {
     if [[ -n "$_uninit" ]]; then
       _nfo_warn_uninit_submodules "$_abs" "$_uninit"
     else
-      _query="?submodules=1"
+      _params+=("submodules=1")
     fi
   fi
 
   _nfo_warn_untracked "$_abs"
+  local _query=""
+  if (( ${#_params[@]} > 0 )); then
+    local IFS='&'
+    _query="?${_params[*]}"
+  fi
   printf 'git+file://%s%s' "$_abs" "$_query"
 }
 
